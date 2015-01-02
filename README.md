@@ -46,13 +46,12 @@ If there's no problem, one of child thread will start subscribing message from R
 Subscribing thread will get the message and split it. After extracting source ip and port from unit-message and parse the mysql packet(payload of tcp/ip packet).
 MRTEPlayer only process three types packet. MRTEPlayer make client thread as many as client_ip:port pair of source MySQL server. And message from MRTECollector will go to each client thread based on client_ip:port pair. 
 
-<pre>
-<li>
-<ul>UserRequest		: Every sql (query and dml and all types text protocol of mysql client/server communication).
-<ul>ConnectionOpen	: COM_CONNECT packet. (Actually MRTECollector capture only income server packet, So MRTECollector can't catch COM_CONNECT packet. This is only emulated packet. Source code is good manual, take a look if you want detailed explanation)
-<ul>ConnectionClose	: COM_QUIT packet.
-</li>
-</pre>
+<ul>
+<li>UserRequest		: Every sql (query and dml and all types text protocol of mysql client/server communication).</li>
+<li>ConnectionOpen	: COM_CONNECT packet. (Actually MRTECollector capture only income server packet, So MRTECollector can't catch COM_CONNECT packet. This is only emulated packet. Source code is good manual, take a look if you want detailed explanation)</li>
+<li>ConnectionClose	: COM_QUIT packet.</li>
+</ul>
+
 
 Understanding output
 --------------------

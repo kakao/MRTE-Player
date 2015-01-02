@@ -1,0 +1,394 @@
+package com.kakao.mrte;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+
+import com.kakao.util.ByteHelper;
+import com.kakao.util.CommandLineOption;
+import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.ConnectionFactory;
+
+public class MRTEPlayer {
+	public static boolean IS_DEBUG = false;
+	private final int STATUS_INTERVAL_SECOND = 10;
+	private SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+	
+	final String QUEUE_NAME = "mrte";
+	final String mqExchangeName = "";  // DEFAULT exchange
+	final String mqExchangeType = "direct";
+	final String mqRoutingKey = "mrte";
+	
+	protected AtomicBoolean shutdown = new AtomicBoolean(false);
+
+	public long recvPacketCounter = 0;
+	public long errorPacketCounter = 0;
+	public AtomicLong playerErrorCounter = new AtomicLong(0);
+	public AtomicLong newSessionCounter = new AtomicLong(0);
+	public AtomicLong closeSessionCounter = new AtomicLong(0);
+	public AtomicLong userRequestCounter = new AtomicLong(0);
+	public AtomicLong duplicateKeyCounter = new AtomicLong(0);
+	public AtomicLong deadlockCounter = new AtomicLong(0);
+	public AtomicLong lockTimeoutCounter = new AtomicLong(0);
+	public AtomicLong noInitDatabsaeCounter = new AtomicLong(0);
+	
+	int initMysqlConnCount = 300;
+	String mysqlHost;
+	int mysqlPort;
+	String mysqlUser;
+	String mysqlPassword;
+	String jdbcUrl;
+	
+	/**
+	 * if defaultDatabase==null then, MRTEPlayer will guess default db from query statement,
+	 * else MRTEPlayer will not guess default db and just use it.
+	 */
+	String defaultDatabase;
+	long connectionPreparedTs;
+	ConcurrentLinkedQueue<Connection> preparedConnQueue;
+	
+	boolean replaySelectOnly;
+	
+	String mqHost;
+	String mqUser;
+	String mqPassword;
+	int mqPort;
+	String mqUrl;
+	
+	Map<String, SQLPlayer> playerMap = new HashMap<String, SQLPlayer>();
+	
+	public static void main(String[] args) throws Exception{
+		MRTEPlayer player = new MRTEPlayer();
+		
+		CommandLineOption options = new CommandLineOption(args);
+		
+		try{
+			player.mysqlHost = options.getStringParameter("mysql_host");
+			player.mysqlUser = options.getStringParameter("mysql_user");
+			player.mysqlPassword = options.getStringParameter("mysql_password", "");
+			player.mysqlPort = options.getIntParameter("mysql_port", 3306);
+			player.initMysqlConnCount = options.getIntParameter("mysql_init_conn", 300);
+			player.defaultDatabase = options.getStringParameter("mysql_default_db", null);
+			if(player.defaultDatabase==null || player.defaultDatabase.trim().length()<=0)
+				player.defaultDatabase = null;
+			
+			player.mqHost = options.getStringParameter("rabbitmq_host");
+			player.mqUser = options.getStringParameter("rabbitmq_user");
+			player.mqPassword = options.getStringParameter("rabbitmq_password");
+			player.mqPort = options.getIntParameter("rabbitmq_port", 5672);
+			
+			player.replaySelectOnly = options.getBooleanParameter("select_only", false);
+		}catch(Exception ex){
+			ex.printStackTrace();
+			options.printHelp(80, 5, 3, true, System.out);
+			return;
+		}
+		
+		if(player.defaultDatabase==null){
+			player.jdbcUrl = "jdbc:mysql://"+player.mysqlHost+":"+player.mysqlPort+"/?autoReconnect=true";
+		}else{
+			player.jdbcUrl = "jdbc:mysql://"+player.mysqlHost+":"+player.mysqlPort+"/"+player.defaultDatabase+"?autoReconnect=true";
+		}
+		player.mqUrl = "amqp://"+player.mqUser+":"+player.mqPassword+"@"+player.mqHost+":"+player.mqPort+"/";
+		
+		player.runMRTEPlayer();
+	}
+	
+	protected void runMRTEPlayer() throws Exception{
+		// prepare target mysql connection
+		this.prepareConnections();
+		
+		// init rabbitmq consumer
+		ConnectionFactory factory = new ConnectionFactory();
+	    factory.setHost(mqHost);
+	    factory.setUsername(mqUser);
+	    factory.setPassword(mqPassword);
+	    factory.setPort(mqPort);
+	    com.rabbitmq.client.Connection connection = factory.newConnection();
+
+	    Channel channel = connection.createChannel();
+	    channel.queueDeclare(QUEUE_NAME/*QueueName*/, false, false, false, null);
+	    channel.close();
+	    
+	    // Create Rabbit MQ consumer and start it
+	    MQueueConsumer consumer = new MQueueConsumer(this, connection.createChannel(), QUEUE_NAME/*, ExecutorService threadExecutor*/);
+
+	    // Print status
+	    long pRecvPacketCounter = 0;
+	    long pErrorPacketCounter = 0;
+	    long pNewSessionCounter = 0;
+	    long pCloseSessionCounter = 0;
+	    long pUserRequestCounter = 0;
+	    long pPlayerErrorCounter = 0;
+	    long pDuplicateKeyCounter = 0;
+	    long pDeadlockCounter = 0;
+	    long pLockTimeoutCounter = 0;
+	    long pNoInitDatabsaeCounter = 0;
+
+	    long cRecvPacketCounter = 0;
+	    long cErrorPacketCounter = 0;
+	    long cNewSessionCounter = 0;
+	    long cCloseSessionCounter = 0;
+	    long cUserRequestCounter = 0;
+	    long cPlayerErrorCounter = 0;
+	    long cDuplicateKeyCounter = 0;
+	    long cDeadlockCounter = 0;
+	    long cLockTimeoutCounter = 0;
+	    long cNoInitDatabsaeCounter = 0;
+	    
+	    int loopCounter = 0;
+	    while(true){
+	    	if(loopCounter%20==0){
+	    		System.out.println();
+	    		System.out.println("DateTime                TotalPacket      ErrorPacket   NewSession   ExitSession      UserRequest        Error (NoInitDB  Duplicated  Deadlock  LockTimeout)");
+	    		loopCounter = 0;
+	    	}
+	    	
+	    	cRecvPacketCounter = recvPacketCounter;
+	    	cErrorPacketCounter = errorPacketCounter;
+	    	cNewSessionCounter = newSessionCounter.get();
+	    	cCloseSessionCounter = closeSessionCounter.get();
+	    	cUserRequestCounter = userRequestCounter.get();
+	    	cPlayerErrorCounter = playerErrorCounter.get();
+	    	cDuplicateKeyCounter = duplicateKeyCounter.get();
+	    	cDeadlockCounter = deadlockCounter.get();
+	    	cLockTimeoutCounter = lockTimeoutCounter.get();
+	    	cNoInitDatabsaeCounter = noInitDatabsaeCounter.get();
+	    	
+	    	System.out.format("%s %15d  %15d   %10d    %10d  %15d  %11d (%8d  %10d  %8d  %11d)\n", dateFormatter.format(new Date()), 
+	    			(long)((cRecvPacketCounter - pRecvPacketCounter) / STATUS_INTERVAL_SECOND),
+	    			(long)((cErrorPacketCounter - pErrorPacketCounter) / STATUS_INTERVAL_SECOND),
+	    			(cNewSessionCounter - pNewSessionCounter),
+	    			(cCloseSessionCounter - pCloseSessionCounter),
+	    			(long)((cUserRequestCounter - pUserRequestCounter) / STATUS_INTERVAL_SECOND),
+	    			(long)((cPlayerErrorCounter - pPlayerErrorCounter) / STATUS_INTERVAL_SECOND),
+	    			(long)((cNoInitDatabsaeCounter - pNoInitDatabsaeCounter) / STATUS_INTERVAL_SECOND),
+	    			(long)((cDuplicateKeyCounter - pDuplicateKeyCounter) / STATUS_INTERVAL_SECOND),
+	    			(long)((cDeadlockCounter - pDeadlockCounter) / STATUS_INTERVAL_SECOND),
+	    			(long)((cLockTimeoutCounter - pLockTimeoutCounter) / STATUS_INTERVAL_SECOND));
+	    	
+	    	if(cRecvPacketCounter==pRecvPacketCounter && cErrorPacketCounter==pErrorPacketCounter){
+	    		// There's no activity on MQueueConsumer
+	    		// I am not sure what happen to Rabbit MQ. Just re open rabbit mq connection & consumer
+	    		try{
+	    			consumer.close();
+	    			connection.close();
+	    		}catch(Exception ignore){
+	    			System.err.println("    >> MRTEPlayer :: Could not close rabbit mq connection");
+	    			ignore.printStackTrace(System.err);
+	    		}
+	    		
+	    		connection = factory.newConnection();
+	    		consumer = new MQueueConsumer(this, connection.createChannel(), QUEUE_NAME/*, ExecutorService threadExecutor*/);
+	    	}
+	    	
+	    	loopCounter++;
+	    	pRecvPacketCounter = cRecvPacketCounter;
+	    	pErrorPacketCounter = cErrorPacketCounter;
+	    	pNewSessionCounter = cNewSessionCounter;
+	    	pCloseSessionCounter = cCloseSessionCounter;
+	    	pUserRequestCounter = cUserRequestCounter;
+	    	pPlayerErrorCounter = cPlayerErrorCounter;
+	    	pDuplicateKeyCounter = cDuplicateKeyCounter;
+	    	pDeadlockCounter = cDeadlockCounter;
+	    	pLockTimeoutCounter = cLockTimeoutCounter;
+	    	pNoInitDatabsaeCounter = cNoInitDatabsaeCounter;
+	    	
+	    	try{
+	    		Thread.sleep(STATUS_INTERVAL_SECOND * 1000);
+	    	}catch(Exception ignore){}
+	    }
+	}
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	protected void destroyPreparedConnections(){
+		if( (System.currentTimeMillis() - this.connectionPreparedTs > 60*10*1000 /* 10 min */) && this.preparedConnQueue.size()>0){
+			Connection conn1;
+			while( (conn1 = this.preparedConnQueue.poll()) != null){
+				try{
+					conn1.close();
+				}catch(Exception ignore){}
+			}
+		}
+	}
+	
+	protected ConcurrentLinkedQueue<Connection> prepareConnections() throws Exception{
+		ConcurrentLinkedQueue<Connection> connQueue = new ConcurrentLinkedQueue<Connection>();
+		System.out.println("    >> MRTEPlayer :: Preparing target database connection");
+		for(int idx=0; idx<initMysqlConnCount; idx++){
+			Connection conn = DriverManager.getConnection(jdbcUrl, mysqlUser, mysqlPassword);
+			connQueue.add(conn); // <--> poll(), poll will return null if no more item on queue
+			System.out.print(".");
+			if(idx>0 && idx%49 == 0){
+				System.out.println();
+			}
+			try{
+				Thread.sleep(50); // Give a sleep time for stable connection preparing
+			}catch(Exception ignore){}
+		}
+		
+		System.out.println("    >> MRTEPlayer :: Done preparing "+initMysqlConnCount+" target database connection");
+		this.preparedConnQueue = connQueue;
+		this.connectionPreparedTs = System.currentTimeMillis(); // These connections will be closed when 10 minites ago from now.
+		return connQueue;
+	}
+	
+	protected String generateSessionKey(String ipAddress, int port){
+		return ipAddress + ":" + String.valueOf(port);
+	}
+	
+	protected void stopAllPlayers(){
+		this.shutdown.set(true);
+	}
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	// ---------------------------------------------------------------------------------------
+	// Packet handling
+	// ---------------------------------------------------------------------------------------
+	
+	/**
+	 * Handle new connection request
+	 * Actually, COM_CONNECT request is not captured by MRTECollector (Because COM_CONNECT packet is sent from server to client, But MRTECollector capture only from-client packet)
+	 * But, client sent response packet for COM_CONNECT with (sequence_no>0), And MysqlProtocol.java will set COM_CONNECT to proto.command when packet which have non-zero sequence packet come. 
+	 *  
+	 * @param partList
+	 * @throws Exception
+	 */
+	protected void processNewSession(List<byte[]> partList) throws Exception{
+		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
+		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
+		String sessionKey = generateSessionKey(sourceIp, sourcePort);
+		
+		MysqlProtocol proto = null;
+		try{
+			proto = MysqlProtocol.parse(partList.get(2), partList.get(3));
+		}catch(Exception ex){
+			throw new Exception("MysqlProtocol parse failed for new session", ex);
+		}
+		
+		if(IS_DEBUG)
+			System.out.println("   - [Packet] Create new session : ["+sessionKey+"][init_db:"+proto.statement+"]");
+
+// TODO :: Sometimes, MRTEPlayer receive client packets neither (sequence!=0) and (response of COM_CONNECT).
+//         So, I commented below code block for killing previous SQLPlayer.
+//         Find what case and fix this.
+		
+//		SQLPlayer oldPlayer = this.playerMap.get(sessionKey);
+//		if(oldPlayer != null){
+//			System.err.println("SQLPlayer thread is running already for session key '"+sessionKey+"'");
+//			System.err.println("Stop previous thread and re-creating it");
+//			oldPlayer.kill();
+//			this.playerMap.remove(sessionKey);
+//			this.closeSessionCounter.incrementAndGet();
+//		}
+		
+		SQLPlayer player = this.playerMap.get(sessionKey);
+		if(proto.command==MysqlProtocol.COM_CONNECT/*Emulated*/){
+			String db = (proto.statement!=null && proto.statement.length()>0) ? proto.statement : this.defaultDatabase;
+			if(player==null){
+				// Clean prepared connection after 10 min from creation
+				// These connection might be closed because of mysql wait_timeout, So after 10 min after creation we should drop these connections.
+				destroyPreparedConnections();
+				
+				// Create new session + put init_db message to queue
+				player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+				this.playerMap.put(sessionKey, player);
+				player.start();
+				this.newSessionCounter.incrementAndGet();
+			}else if(proto.statement!=null && proto.statement.length()>0){
+				player.postJob(proto);
+			}
+
+			if(MRTEPlayer.IS_DEBUG){
+				System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] New connection created with default db, query executed without sql player");
+			}
+			
+			player.postJob(new MysqlProtocol(MysqlProtocol.COM_INIT_DB, (short)0, proto.statement));
+		}
+		
+		// We don't make new sql player, because this method will be called when server and client is trying to handshake.
+		//               And we don't know this connection trying is going to succeed or not.
+		//               So, just clearing garbage sql player for this client ip and port
+		//SQLPlayer newPlayer = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, this.defaultDatabase, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+		//this.playerMap.put(sessionKey, newPlayer);
+		//newPlayer.start();
+		//if(MRTEPlayer.IS_DEBUG){
+		//	System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] New connection created");
+		//}
+	}
+	
+	protected void processCloseSession(List<byte[]> partList) throws Exception{
+		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
+		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
+		String sessionKey = generateSessionKey(sourceIp, sourcePort);
+		
+		if(IS_DEBUG)
+			System.out.println("   - [Packet] Close session : ["+sessionKey+"]");
+		
+		SQLPlayer player = this.playerMap.get(sessionKey);
+		if(player == null){
+			System.err.println("SQLPlayer thread is not exist for session key '"+sessionKey+"'");
+		}else{
+			player.postJob(new MysqlProtocol(MysqlProtocol.COM_QUIT, (short)0, "") /* Emulate COM_QUIT command */);
+			this.playerMap.remove(sessionKey);
+			this.closeSessionCounter.incrementAndGet();
+			
+			if(MRTEPlayer.IS_DEBUG){
+				System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] Connection closed");
+			}
+		}
+	}
+
+	protected void processUserRequest(List<byte[]> partList) throws Exception{
+		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
+		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
+		String sessionKey = generateSessionKey(sourceIp, sourcePort);
+		
+		MysqlProtocol proto = null;
+		try{
+			proto = MysqlProtocol.parse(partList.get(2), partList.get(3));
+		}catch(Exception ex){
+			throw new Exception("MysqlProtocol parse failed for normal request", ex);
+		}
+		
+		if(IS_DEBUG)
+			System.out.println("   - [Packet] Execute query : ["+sessionKey+"] ["+MysqlProtocol.COMMAND_MAP.get(new Integer(proto.command))+"]["+proto.statement+"]");
+		
+		SQLPlayer player = this.playerMap.get(sessionKey);
+		if(player==null){
+			// At starting MRTEPlayer, all connection is empty. So we have to guess default database with query
+			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, this.defaultDatabase, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+			this.playerMap.put(sessionKey, player);
+			player.start();
+			this.newSessionCounter.incrementAndGet();
+			
+			if(MRTEPlayer.IS_DEBUG){
+				System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] New connection created, query executed without sql player");
+			}
+		}
+		
+		player.postJob(proto);
+	}
+}

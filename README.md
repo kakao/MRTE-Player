@@ -10,6 +10,7 @@ https://github.com/kakao/MRTE-Player/blob/master/doc/mrte.png
 
 How to run
 ----------
+<pre>
 java \
 -XX:+UseParNewGC -XX:+UseConcMarkSweepGC -XX:NewSize=1024M -XX:SurvivorRatio=3 -XX:MaxTenuringThreshold=3 \
 -XX:+CMSParallelRemarkEnabled -XX:CMSInitiatingOccupancyFraction=70 -XX:+UseCMSInitiatingOccupancyOnly \
@@ -27,3 +28,4 @@ java \
 --rabbitmq_password="" \
 --rabbitmq_port=5672 \
 --select_only=no 2> error.log
+</pre>

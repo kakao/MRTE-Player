@@ -10,31 +10,42 @@ https://github.com/kakao/MRTE-Player/blob/master/doc/mrte.png
 
 How to run
 ----------
+You can change MRTEPlayer.sh shell script based on "MRTEPlayer Parameter"
+
 <pre>
-java \
+./MRTEPlayer.sh
+</pre>
+
+MRTEPlayer will print detailed error message standard error stream when error happened. 
+So you can append "2> ${MRTE_HOME}/error.log" on MRTEPlayer command line option when you want to collect error message.  
+
+
+Run parameter
+-------------
+This is MRTEPlayer option list.
+
+<pre>
+<ul>
+<li>--mysql_host		: Target MySQL server host name or ip address (e.g. "127.0.0.1")</li>
+<li>--mysql_user		: Target MySQL server user account (This user can access #{mysql_default_db})</li>
+<li>--mysql_password	: Target MySQL server user password</li>
+<li>--mysql_port		: Target MySQL server port (default 3306)</li>
+<li>--mysql_init_conn	: How many connection MRTEPlayer should prepare before replaying user request. You may set this value as many as Source MySQL server connection.</li>
+<li>--mysql_default_db	: Target MySQL server default database. MRTEPlayer will set this value as all connection's default database</li>
+<li>--rabbitmq_host		: Rabbit MQ host name or ip address</li>
+<li>--rabbitmq_user		: Rabbit MQ user account (default "guest") </li>
+<li>--rabbitmq_password	: Rabbit MQ user password (default "guest")</li>
+<li>--rabbitmq_port		: Rabbit MQ server port (default 5672)</li>
+<li>--select_only		: Whether MRTEPlayer run only SELECT query or all query (default "no", you can set only "yes" or "now")</li>
+</pre>
+
+And you can add JVM option like this. At least you should allow JVM use 1GB of heap.
+<pre>
 -XX:+UseParNewGC -XX:+UseConcMarkSweepGC -XX:NewSize=1024M -XX:SurvivorRatio=3 -XX:MaxTenuringThreshold=3 \
 -XX:+CMSParallelRemarkEnabled -XX:CMSInitiatingOccupancyFraction=70 -XX:+UseCMSInitiatingOccupancyOnly \
 -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationStoppedTime \
 -Xloggc:mrte_player_gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=10 -XX:GCLogFileSize=20M \
 -Xmx10G -Xms10G -cp $CLASSPATH com.kakao.mrte.MRTEPlayer \
---mysql_host="127.0.0.1" \
---mysql_user="mrte" \
---mysql_password="" \
---mysql_port=3306 \
---mysql_init_conn=200 \
---mysql_default_db="" \
---rabbitmq_host="127.0.0.1" \
---rabbitmq_user="guest" \
---rabbitmq_password="" \
---rabbitmq_port=5672 \
---select_only=no 2> error.log
-</pre>
-
-
-How to run
-----------
-<pre>
-./MRTEPlayer.sh
 </pre>
 
 
@@ -55,7 +66,7 @@ MRTEPlayer only process three types packet. MRTEPlayer make client thread as man
 
 Understanding output
 --------------------
-MRTEPlayer also print internal processing status every 10 seconds.
+MRTEPlayer also print internal processing status every 10 seconds. And printed value is per second.
 
 <pre>
 $ MRTEPlayer.sh

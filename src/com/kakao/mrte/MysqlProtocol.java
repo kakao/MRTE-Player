@@ -133,7 +133,7 @@ public class MysqlProtocol {
 	public final PROTO_PHASE phase;
 	public final byte command;
 	public final short sequence;
-	public final String statement;
+	public String statement;
 	
 	public MysqlProtocol(byte c, short s, String st){
 		this.command = c;

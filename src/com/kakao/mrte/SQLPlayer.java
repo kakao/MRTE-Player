@@ -220,7 +220,7 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 					}
 					this.lastQueryExecuted.set(System.currentTimeMillis());
 					parent.userRequestCounter.incrementAndGet();
-				}else if(proto.command==MysqlProtocol.COM_INIT_DB){
+				}else if(proto.command==MysqlProtocol.COM_INIT_DB && proto.statement!=null && proto.statement.length()>0){
 					boolean result = setDefaultDatabase(proto.statement);
 					if(!result){
 						System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] set default db '"+proto.statement+"' failed");

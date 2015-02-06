@@ -13,18 +13,16 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import com.kakao.util.ByteHelper;
 import com.kakao.util.CommandLineOption;
+import com.kakao.util.DatabaseMapper;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.ConnectionFactory;
 
 public class MRTEPlayer {
 	public static boolean IS_DEBUG = false;
+
 	private final int STATUS_INTERVAL_SECOND = 10;
-	private SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 	
-	final String QUEUE_NAME = "mrte";
-	final String mqExchangeName = "";  // DEFAULT exchange
-	final String mqExchangeType = "direct";
-	final String mqRoutingKey = "mrte";
+	private SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");	
 	
 	protected AtomicBoolean shutdown = new AtomicBoolean(false);
 
@@ -46,6 +44,8 @@ public class MRTEPlayer {
 	String mysqlPassword;
 	String jdbcUrl;
 	
+	DatabaseMapper dbMapper = null;
+	
 	/**
 	 * if defaultDatabase==null then, MRTEPlayer will guess default db from query statement,
 	 * else MRTEPlayer will not guess default db and just use it.
@@ -61,6 +61,8 @@ public class MRTEPlayer {
 	String mqPassword;
 	int mqPort;
 	String mqUrl;
+	String mqQueueName;
+	String mqRoutingKey;
 	
 	Map<String, SQLPlayer> playerMap = new HashMap<String, SQLPlayer>();
 	
@@ -81,10 +83,17 @@ public class MRTEPlayer {
 			
 			player.mqHost = options.getStringParameter("rabbitmq_host");
 			player.mqUser = options.getStringParameter("rabbitmq_user");
-			player.mqPassword = options.getStringParameter("rabbitmq_password");
+			player.mqPassword = options.getStringParameter("rabbitmq_password", "");
 			player.mqPort = options.getIntParameter("rabbitmq_port", 5672);
 			
 			player.replaySelectOnly = options.getBooleanParameter("select_only", false);
+			String dbMapOption = options.getStringParameter("database_remap", null);
+			if(dbMapOption!=null && dbMapOption.trim().length()>0){
+				player.dbMapper = new DatabaseMapper();
+				player.dbMapper.parseDatabaseMapping(options.getStringParameter("database_remap"));
+			}
+			player.mqQueueName = options.getStringParameter("rabbitmq_queue_name", "");
+			player.mqRoutingKey = options.getStringParameter("rabbitmq_routing_key", "");
 		}catch(Exception ex){
 			ex.printStackTrace();
 			options.printHelp(80, 5, 3, true, System.out);
@@ -113,12 +122,15 @@ public class MRTEPlayer {
 	    factory.setPort(mqPort);
 	    com.rabbitmq.client.Connection connection = factory.newConnection();
 
-	    Channel channel = connection.createChannel();
-	    channel.queueDeclare(QUEUE_NAME/*QueueName*/, false, false, false, null);
-	    channel.close();
+	    // This procedure will be handled by user manually
+	    // Channel channel = connection.createChannel();
+	    // channel.queueDeclare(mqQueueName, false, false, false, null);
+	    // channel.queueBind(mqQueueName, EXCHANGE_NAME, ROUTING_KEY);
+	    // channel.close();
+	    // System.err.println("    >> MRTEPlayer :: Declare and binding queue with queue-name : " + mqQueueName);
 	    
 	    // Create Rabbit MQ consumer and start it
-	    MQueueConsumer consumer = new MQueueConsumer(this, connection.createChannel(), QUEUE_NAME/*, ExecutorService threadExecutor*/);
+	    MQueueConsumer consumer = new MQueueConsumer(this, connection.createChannel(), mqQueueName, mqRoutingKey/*, ExecutorService threadExecutor*/);
 
 	    // Print status
 	    long pRecvPacketCounter = 0;
@@ -186,7 +198,7 @@ public class MRTEPlayer {
 	    		}
 	    		
 	    		connection = factory.newConnection();
-	    		consumer = new MQueueConsumer(this, connection.createChannel(), QUEUE_NAME/*, ExecutorService threadExecutor*/);
+	    		consumer = new MQueueConsumer(this, connection.createChannel(), mqQueueName, mqRoutingKey/*, ExecutorService threadExecutor*/);
 	    	}
 	    	
 	    	loopCounter++;
@@ -229,12 +241,12 @@ public class MRTEPlayer {
 	protected ConcurrentLinkedQueue<Connection> prepareConnections() throws Exception{
 		ConcurrentLinkedQueue<Connection> connQueue = new ConcurrentLinkedQueue<Connection>();
 		System.out.println("    >> MRTEPlayer :: Preparing target database connection");
-		for(int idx=0; idx<initMysqlConnCount; idx++){
+		for(int idx=1; idx<=initMysqlConnCount; idx++){
 			Connection conn = DriverManager.getConnection(jdbcUrl, mysqlUser, mysqlPassword);
 			connQueue.add(conn); // <--> poll(), poll will return null if no more item on queue
 			System.out.print(".");
-			if(idx>0 && idx%49 == 0){
-				System.out.println();
+			if(idx%100 == 0){
+				System.out.println(" --> Prepared " + idx + " connections");
 			}
 			try{
 				Thread.sleep(50); // Give a sleep time for stable connection preparing
@@ -276,7 +288,7 @@ public class MRTEPlayer {
 	 * @param partList
 	 * @throws Exception
 	 */
-	protected void processNewSession(List<byte[]> partList) throws Exception{
+	protected void processNewSession(String sourceServerIp, List<byte[]> partList) throws Exception{
 		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
 		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
 		String sessionKey = generateSessionKey(sourceIp, sourcePort);
@@ -306,7 +318,13 @@ public class MRTEPlayer {
 		
 		SQLPlayer player = this.playerMap.get(sessionKey);
 		if(proto.command==MysqlProtocol.COM_CONNECT/*Emulated*/){
-			String db = (proto.statement!=null && proto.statement.length()>0) ? proto.statement : this.defaultDatabase;
+			String db = null;
+			if(proto.statement!=null && proto.statement.length()>0){
+				db = (this.dbMapper==null) ? proto.statement : this.dbMapper.getNewDatabase(sourceServerIp, proto.statement);
+			}else{
+				db = this.defaultDatabase;
+			}
+
 			if(player==null){
 				// Clean prepared connection after 10 min from creation
 				// These connection might be closed because of mysql wait_timeout, So after 10 min after creation we should drop these connections.
@@ -339,7 +357,7 @@ public class MRTEPlayer {
 		//}
 	}
 	
-	protected void processCloseSession(List<byte[]> partList) throws Exception{
+	protected void processCloseSession(String sourceServerIp, List<byte[]> partList) throws Exception{
 		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
 		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
 		String sessionKey = generateSessionKey(sourceIp, sourcePort);
@@ -361,7 +379,7 @@ public class MRTEPlayer {
 		}
 	}
 
-	protected void processUserRequest(List<byte[]> partList) throws Exception{
+	protected void processUserRequest(String sourceServerIp, List<byte[]> partList) throws Exception{
 		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
 		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
 		String sessionKey = generateSessionKey(sourceIp, sourcePort);
@@ -376,10 +394,18 @@ public class MRTEPlayer {
 		if(IS_DEBUG)
 			System.out.println("   - [Packet] Execute query : ["+sessionKey+"] ["+MysqlProtocol.COMMAND_MAP.get(new Integer(proto.command))+"]["+proto.statement+"]");
 		
+		String db = null;
+		if(proto.command==MysqlProtocol.COM_INIT_DB && this.dbMapper!=null && proto.statement!=null && proto.statement.length()>0){
+			proto.statement = this.dbMapper.getNewDatabase(sourceServerIp, proto.statement);
+			db = proto.statement;
+		}else{
+			db = this.defaultDatabase;
+		}
+		
 		SQLPlayer player = this.playerMap.get(sessionKey);
 		if(player==null){
 			// At starting MRTEPlayer, all connection is empty. So we have to guess default database with query
-			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, this.defaultDatabase, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
 			this.playerMap.put(sessionKey, player);
 			player.start();
 			this.newSessionCounter.incrementAndGet();

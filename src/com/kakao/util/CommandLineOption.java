@@ -10,8 +10,8 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.PosixParser;
 
 public class CommandLineOption{
-	final static String HELP_MSG_HEADER = "--- Command Usage ---" ;
-	final static String HELP_MSG_FOOTER = "---------------------" ;
+	final static String HELP_MSG_HEADER = "--- Command Usage ------------------------------------------------------" ;
+	final static String HELP_MSG_FOOTER = "------------------------------------------------------------------------" ;
 	
 	final CommandLine cmdLine;
 	final Options options;
@@ -156,9 +156,12 @@ public class CommandLineOption{
 		options.addOption("rP", "rabbitmq_port", true, "RabbitMQ port");
 		options.addOption("ru", "rabbitmq_user", true, "RabbitMQ user");
 		options.addOption("rp", "rabbitmq_password", true, "RabbitMQ password");
+		options.addOption("qn", "rabbitmq_queue_name", true, "RabbitMQ queue name");
+		options.addOption("rt", "rabbitmq_routing_key", true, "RabbitMQ routing key");
 		
 		options.addOption("so", "select_only", true, "Replay only select query");
-		
+		options.addOption("dr", "database_remap", true, "Database remapping options");
+				
 		return options;
 	}
 

@@ -1,31 +1,33 @@
 package com.kakao.util;
 
+import java.io.PrintStream;
+
 
 public class HexDumper {
 
-	public static void dumpBytes(byte[] bytes){
+	public static void dumpBytes(PrintStream outputStream, byte[] bytes){
 		int width = 16;
 		for (int index = 0; index < bytes.length; index += width) {
 			try{
-				printHex(bytes, index, width);
-				printAscii(bytes, index, width);
+				printHex(outputStream, bytes, index, width);
+				printAscii(outputStream, bytes, index, width);
 			}catch(Exception ignore){
-				System.out.println("Can't dump byte[], " + ignore.getMessage());
+				outputStream.println("Can't dump byte[], " + ignore.getMessage());
 			}
 		}
 	}
 
-	private static void printHex(byte[] bytes, int offset, int width) {
+	private static void printHex(PrintStream outputStream, byte[] bytes, int offset, int width) {
 		for (int index = 0; index < width; index++) {
 			if (index + offset < bytes.length) {
-				System.out.printf("%02x ", bytes[index + offset]);
+				outputStream.printf("%02x ", bytes[index + offset]);
 			} else {
-				System.out.print("	");
+				outputStream.print("	");
 			}
 		}
 	}
 
-	private static void printAscii(byte[] bytes, int index, int width) throws Exception{
+	private static void printAscii(PrintStream outputStream, byte[] bytes, int index, int width) throws Exception{
 		/*
 		for (int index = 0; index < width; index++) {
 			if (index + offset < bytes.length){
@@ -48,9 +50,9 @@ public class HexDumper {
 		
 		if (index < bytes.length) {
 			width = Math.min(width, bytes.length - index);
-			System.out.println(":" + new String(bytes, index, width, "US-ASCII").replaceAll("\r\n", " ").replaceAll("\n"," "));
+			outputStream.println(":" + new String(bytes, index, width, "US-ASCII").replaceAll("\r\n", " ").replaceAll("\n"," "));
 		} else {
-			System.out.println();
+			outputStream.println();
 		}
 	}
 }

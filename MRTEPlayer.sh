@@ -18,8 +18,13 @@ java \
 --mysql_port=3306 \
 --mysql_init_conn=200 \
 --mysql_default_db="" \
+--database_remap="192.168.0.1/db=newdb1,192.168.0.2/db=newdb2,192.168.0.3/db=newdb3,192.168.0.4/db=newdb4" \
 --rabbitmq_host="127.0.0.1" \
 --rabbitmq_user="guest" \
 --rabbitmq_password="" \
 --rabbitmq_port=5672 \
+--rabbitmq_queue_name="queue1" \
+--rabbitmq_routing_key="" \
 --select_only=no 2> error.log
+
+## if database_remap option is not present, database mapping is not used internally.

@@ -36,6 +36,7 @@ public class MRTEPlayer {
 	public AtomicLong deadlockCounter = new AtomicLong(0);
 	public AtomicLong lockTimeoutCounter = new AtomicLong(0);
 	public AtomicLong noInitDatabsaeCounter = new AtomicLong(0);
+	public AtomicLong longQueryCounter = new AtomicLong(0);
 	
 	int initMysqlConnCount = 300;
 	String mysqlHost;
@@ -55,6 +56,7 @@ public class MRTEPlayer {
 	ConcurrentLinkedQueue<Connection> preparedConnQueue;
 	
 	boolean replaySelectOnly;
+	long slowQueryTime = 1000 /* Milli-seconds */;
 	
 	String mqHost;
 	String mqUser;
@@ -80,6 +82,8 @@ public class MRTEPlayer {
 			player.defaultDatabase = options.getStringParameter("mysql_default_db", null);
 			if(player.defaultDatabase==null || player.defaultDatabase.trim().length()<=0)
 				player.defaultDatabase = null;
+			
+			player.slowQueryTime = options.getLongParameter("slow_query_time", 1000);
 			
 			player.mqHost = options.getStringParameter("rabbitmq_host");
 			player.mqUser = options.getStringParameter("rabbitmq_user");
@@ -143,6 +147,7 @@ public class MRTEPlayer {
 	    long pDeadlockCounter = 0;
 	    long pLockTimeoutCounter = 0;
 	    long pNoInitDatabsaeCounter = 0;
+	    long pLongQueryCounter = 0;
 
 	    long cRecvPacketCounter = 0;
 	    long cErrorPacketCounter = 0;
@@ -154,12 +159,13 @@ public class MRTEPlayer {
 	    long cDeadlockCounter = 0;
 	    long cLockTimeoutCounter = 0;
 	    long cNoInitDatabsaeCounter = 0;
+	    long cLongQueryCounter = 0;
 	    
 	    int loopCounter = 0;
 	    while(true){
 	    	if(loopCounter%20==0){
 	    		System.out.println();
-	    		System.out.println("DateTime                TotalPacket      ErrorPacket   NewSession   ExitSession      UserRequest        Error (NoInitDB  Duplicated  Deadlock  LockTimeout)");
+	    		System.out.println("DateTime                TotalPacket      ErrorPacket   NewSession   ExitSession      UserRequest(Slow)        Error (NoInitDB  Duplicated  Deadlock  LockTimeout)");
 	    		loopCounter = 0;
 	    	}
 	    	
@@ -173,13 +179,15 @@ public class MRTEPlayer {
 	    	cDeadlockCounter = deadlockCounter.get();
 	    	cLockTimeoutCounter = lockTimeoutCounter.get();
 	    	cNoInitDatabsaeCounter = noInitDatabsaeCounter.get();
+	    	cLongQueryCounter = longQueryCounter.get();
 	    	
-	    	System.out.format("%s %15d  %15d   %10d    %10d  %15d  %11d (%8d  %10d  %8d  %11d)\n", dateFormatter.format(new Date()), 
+	    	System.out.format("%s %15d  %15d   %10d    %10d  %15d(%4d)  %11d (%8d  %10d  %8d  %11d)\n", dateFormatter.format(new Date()), 
 	    			(long)((cRecvPacketCounter - pRecvPacketCounter) / STATUS_INTERVAL_SECOND),
 	    			(long)((cErrorPacketCounter - pErrorPacketCounter) / STATUS_INTERVAL_SECOND),
 	    			(cNewSessionCounter - pNewSessionCounter),
 	    			(cCloseSessionCounter - pCloseSessionCounter),
 	    			(long)((cUserRequestCounter - pUserRequestCounter) / STATUS_INTERVAL_SECOND),
+	    			(long)((cLongQueryCounter - pLongQueryCounter) / STATUS_INTERVAL_SECOND),
 	    			(long)((cPlayerErrorCounter - pPlayerErrorCounter) / STATUS_INTERVAL_SECOND),
 	    			(long)((cNoInitDatabsaeCounter - pNoInitDatabsaeCounter) / STATUS_INTERVAL_SECOND),
 	    			(long)((cDuplicateKeyCounter - pDuplicateKeyCounter) / STATUS_INTERVAL_SECOND),
@@ -212,6 +220,7 @@ public class MRTEPlayer {
 	    	pDeadlockCounter = cDeadlockCounter;
 	    	pLockTimeoutCounter = cLockTimeoutCounter;
 	    	pNoInitDatabsaeCounter = cNoInitDatabsaeCounter;
+	    	pLongQueryCounter = cLongQueryCounter;
 	    	
 	    	try{
 	    		Thread.sleep(STATUS_INTERVAL_SECOND * 1000);
@@ -331,7 +340,7 @@ public class MRTEPlayer {
 				destroyPreparedConnections();
 				
 				// Create new session + put init_db message to queue
-				player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+				player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.slowQueryTime, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
 				this.playerMap.put(sessionKey, player);
 				player.start();
 				this.newSessionCounter.incrementAndGet();
@@ -405,7 +414,7 @@ public class MRTEPlayer {
 		SQLPlayer player = this.playerMap.get(sessionKey);
 		if(player==null){
 			// At starting MRTEPlayer, all connection is empty. So we have to guess default database with query
-			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.slowQueryTime, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
 			this.playerMap.put(sessionKey, player);
 			player.start();
 			this.newSessionCounter.incrementAndGet();

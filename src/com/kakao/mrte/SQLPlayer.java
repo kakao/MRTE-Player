@@ -27,6 +27,7 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 	public final String user;
 	public final String password;
 	public final String defaultDatabase;
+	public final long slowQueryTime; /* Milli-second */
 	
 	private ArrayBlockingQueue<MysqlProtocol> jobQueue;
 	private Connection targetConnection;
@@ -39,7 +40,7 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 		return clientIp + clientPort;
 	}
 	
-	public SQLPlayer(MRTEPlayer parent, String clientIp, int clientPort, Connection conn, String jdbcUrl, String user, String password, String defaultDatabase, boolean playOnlySelect, int queueSize) throws Exception{
+	public SQLPlayer(MRTEPlayer parent, String clientIp, int clientPort, Connection conn, String jdbcUrl, String user, String password, String defaultDatabase, long slowQueryTime, boolean playOnlySelect, int queueSize) throws Exception{
 		this.parent = parent;
 		this.clientIp = clientIp;
 		this.clientPort = clientPort;
@@ -48,6 +49,8 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 		this.user = user;
 		this.password = password;
 		this.defaultDatabase = defaultDatabase;
+		
+		this.slowQueryTime = slowQueryTime;
 		
 		this.playOnlySelect = playOnlySelect;
 
@@ -155,11 +158,17 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 						}
 					}
 					try{
+						long queryStart = System.currentTimeMillis(); // System.nanoTime();
 						boolean hasResult = this.stmt.execute(proto.statement);
+						long queryEnd = System.currentTimeMillis(); // System.nanoTime();
 						if(hasResult){
 							ResultSet rs = this.stmt.getResultSet();
 							// while(rs.next()); ==> MySQL always buffering all result set from server. so we don't need to iterating all rows.
 							rs.close();
+						}
+						
+						if((queryEnd - queryStart) > this.slowQueryTime){
+							parent.longQueryCounter.incrementAndGet();
 						}
 					}catch(Exception ex){
 						parent.playerErrorCounter.incrementAndGet();

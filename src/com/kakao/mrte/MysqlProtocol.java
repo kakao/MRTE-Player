@@ -219,6 +219,8 @@ public class MysqlProtocol {
 			if(command==COM_INIT_DB || command==COM_QUERY || command==COM_FIELD_LIST){
 				statement = (body==null) ? null : new String(body, NETWORK_CHARACTERSET);
 				statement = (statement==null) ? null : statement.trim();
+			}else if(command==COM_QUIT){
+				statement = null;
 			}else if(command==COM_STMT_PREPARE || command==COM_STMT_EXECUTE){
 				System.err.println("[ERROR] PrepredStatement is not supported yet, Just ignored");
 			}else{

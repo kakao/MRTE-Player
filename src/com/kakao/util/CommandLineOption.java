@@ -159,6 +159,8 @@ public class CommandLineOption{
 		options.addOption("qn", "rabbitmq_queue_name", true, "RabbitMQ queue name");
 		options.addOption("rt", "rabbitmq_routing_key", true, "RabbitMQ routing key");
 		
+		options.addOption("sq", "slow_query_time", true, "Long query time in milli-seconds");
+		
 		options.addOption("so", "select_only", true, "Replay only select query");
 		options.addOption("dr", "database_remap", true, "Database remapping options");
 				

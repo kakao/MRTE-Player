@@ -121,7 +121,8 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 	}
 	
 	public void run(){
-		MysqlProtocol proto;
+		MysqlProtocol accumProto = null;
+		MysqlProtocol proto = null;
 		while(true){
 			try{
 				proto = jobQueue.poll(1000, TimeUnit.MILLISECONDS);
@@ -137,6 +138,22 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 			//if(this.defaultDatabase==null && this.currentDatabase==null){
 			//	// Guess default database from query statement
 			//}
+			
+			if(!proto.isLastFragment()){
+				// Stacking packet
+				if(accumProto==null){
+					accumProto = proto;
+				}else{
+					accumProto.addFragmentedProto(proto);
+				}
+				
+				continue;
+			}
+			
+			if(accumProto!=null){
+				proto = accumProto;
+				accumProto = null;
+			}
 			
 			if(!isPlayerPrepared){
 				try{

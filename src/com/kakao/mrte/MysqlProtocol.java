@@ -1,6 +1,8 @@
 package com.kakao.mrte;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import com.kakao.util.ByteHelper;
@@ -131,17 +133,41 @@ public class MysqlProtocol {
 	public enum PROTO_PHASE {HANDSHAKE, COMMAND};
 
 	public final PROTO_PHASE phase;
+	
+
+	public final int ipId;
+	public final int ipFlag;
+	public final int ipFragOffset;
+	
 	public final byte command;
 	public final short sequence;
 	public String statement;
 	
-	public MysqlProtocol(byte c, short s, String st){
+	List<MysqlProtocol> fragmentedProtoList = null;
+	
+	public MysqlProtocol(int ipId, int ipFlag, int ipFragOffset, byte c, short s, String st){
+		this.ipId = ipId;
+		this.ipFlag = ipFlag;
+		this.ipFragOffset = ipFragOffset;
+		
 		this.command = c;
 		this.sequence = s;
 		this.statement = st;
 
 		// In the command phase, the client sends a command packet with the sequence-id [00]:
 		this.phase = (this.sequence==0) ? PROTO_PHASE.COMMAND : PROTO_PHASE.HANDSHAKE;
+		
+		fragmentedProtoList = null;
+	}
+	
+	/**
+	 * This can cause broken character,
+	 * Because we convert partital byte[] to string, But this is not hurt sql keyword.
+	 * 
+	 * @param proto
+	 */
+	public void addFragmentedProto(MysqlProtocol proto){
+		this.statement = this.statement + proto.statement;
 	}
 	
 
@@ -161,16 +187,58 @@ public class MysqlProtocol {
 		return header[4];
 	}
 	
-	public static void main(String[] args) throws Exception{
+	/**
+	 * (2) Flags - This 3-bit field contains the flags that specify the function of the frame in terms of whether fragmentation has been employed, additional fragments are coming, or this is the final fragment.
+	 * Bit  Indicator	RFC 791 Definition
+	 * 0xx	Reserved
+	 * x0x	May Fragment
+	 * x1x	Do Not Fragment
+	 * xx0	Last Fragment
+	 * xx1	More Fragmenets
+	 * 
+	 * @return
+	 */
+	public boolean isFragmentedPacket(){
+		int FLAG_NOT_DEFRAGMENT = 2;
+		
+		if( (this.ipFlag & FLAG_NOT_DEFRAGMENT) == FLAG_NOT_DEFRAGMENT){
+			return false;
+		}
+		
+		return true;
+	}
+	
+	public boolean isLastFragment(){
+		int FLAG_MORE_FRAGMENT = 1; // More Fragment
+
+		if( (this.ipFlag & FLAG_MORE_FRAGMENT) == FLAG_MORE_FRAGMENT){
+			return false; // more fragment
+		}
+		
+		return true;
+	}
+	
+	public static void main1(String[] args) throws Exception{
 		byte[] header = new byte[]{0x14, 0x00, 0x00, 0x03, 0x06};
 		byte[] body = new byte[]{(byte)0xee, 0x1d, (byte)0xf5, 0x5f, 0x2d, (byte)0xc9, 0x6a, (byte)0x98, 0x21, 0x44, 0x3b, 0x14, (byte)0xb3, (byte)0xde, (byte)0xff, (byte)0xe1, (byte)0xb6, (byte)0xb0, 0x30};
 		System.out.println("body : " + new String(body));
-		MysqlProtocol.parse(header, body);
+		MysqlProtocol.parse(new byte[]{0,0}, new byte[]{0,0}, new byte[]{0,0}, header, body);
 	}
 	
-	public static MysqlProtocol parse(byte[] header, byte[] body) throws Exception{
+	public static MysqlProtocol parse(byte[] ipIdentification, byte[] ipFlags, byte[] ipFragmentOffset, byte[] header, byte[] body) throws Exception{
 		if(header==null || header.length<5){
 			throw new Exception("MySQL packet must be greater than 4 bytes");
+		}
+		
+		int ipId = ByteHelper.readUnsignedShortLittleEndian(ipIdentification, 0);
+		int ipFlag = ipFlags[0];
+		int ipFragOffset = ByteHelper.readUnsignedShortLittleEndian(ipFragmentOffset, 0);
+		
+		if(ipFragOffset>0){ // If this is fragmented and not fist fragmentation, there's no mysql header
+			byte[] body2 = new byte[header.length + body.length];
+			System.arraycopy(header, 0, body2, 0, header.length);
+			System.arraycopy(body, 0, body2, header.length, body.length);
+			return new MysqlProtocol(ipId, ipFlag, ipFragOffset, MysqlProtocol.COM_QUERY, (short)0, new String(body2, NETWORK_CHARACTERSET));
 		}
 		
 		int userdataSize = ByteHelper.readUnsignedMediumLittleEndian(header, 0);
@@ -228,7 +296,7 @@ public class MysqlProtocol {
 			}
 		}
 		
-		return new MysqlProtocol(command, sequence, statement);
+		return new MysqlProtocol(ipId, ipFlag, ipFragOffset, command, sequence, statement);
 	}
 	
 	/**

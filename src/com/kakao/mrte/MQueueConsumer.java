@@ -56,10 +56,10 @@ public class MQueueConsumer extends DefaultConsumer{
 		
 		// MQueue message ==> [packet_len1:4][packet1][[packet_len2:4][packet2][packet_len3:4][packet3]...
 		/*
-		 * 4-bytes     [4-bytes       4-bytes            2-bytes             2-bytes            1-bytes   2-bytes        variable-length    4-bytes ]...           
-		 * LOCAL_IP    [UNIT_LENGTH   PACKET_SOURCE_IP   PACKET_SOURCE_PORT  IP-IDENTIFICATION  IP-FLAGS  IP-FLAGOFFSET  PACKET_DATA        CHECKSUM]...
+		 * 4-bytes     [4-bytes       4-bytes            2-bytes             variable-length    4-bytes ]...           
+		 * LOCAL_IP    [UNIT_LENGTH   PACKET_SOURCE_IP   PACKET_SOURCE_PORT  PACKET_DATA        CHECKSUM]...
 		 * 
-		 * UNIT_LENGTH = sizeof (PACKET_SOURCE_IP + PACKET_SOURCE_PORT + 5(IP-HEADERS) + PACKET_DATA)
+		 * UNIT_LENGTH = sizeof (PACKET_SOURCE_IP + PACKET_SOURCE_PORT + PACKET_DATA)
 		 */
 		int currPosition = 0;
 		int packetLen = 0;
@@ -75,10 +75,8 @@ public class MQueueConsumer extends DefaultConsumer{
 		currPosition += 4;
 		String error = null;
 		ByteReadException exception = null;
-		short currProtocolSequence = 0;
-		byte prevMysqlCommand = MysqlProtocol.COM_UNKNOWN, currMysqlCommand = MysqlProtocol.COM_UNKNOWN;
 		while(currPosition<body.length){
-			if(currPosition+19/* at least, LENGTH(4)+IP(4)+PORT(2)+IP_HEADERS(5)+CHECKSUM(4) */ >= body.length){
+			if(currPosition+14/* at least, LENGTH(4)+IP(4)+PORT(2)+CHECKSUM(4) */ >= body.length){
 				parent.errorPacketCounter++;
 				break; // no more data or error
 			}
@@ -86,7 +84,7 @@ public class MQueueConsumer extends DefaultConsumer{
 			// Read current packet-length & packet data
 			try{
 				packetLen = (int)ByteHelper.readUnsignedIntLittleEndian(body, currPosition); // 4byte packet length
-				if(packetLen<=15/* at least, IP(4)+PORT(2)+IP_HEADERS(5)+CHECKSUM(4) */){
+				if(packetLen<=10/* at least, IP(4)+PORT(2)+CHECKSUM(4) */){
 					error = "[ERROR] Failed to process MQ message : MQueueConsumer.handleDelivery() - packet length is zero or negative";
 					break;
 				}
@@ -121,20 +119,12 @@ public class MQueueConsumer extends DefaultConsumer{
 			currPosition += 4/* Checksum */;
 			
 			// Process current packet
-			// Packet : ip(4) + port(2) + ip-header(5) + mysql_packet_payload
+			// Packet : ip(4) + port(2) + mysql_packet_payload
 			try{
 				List<byte[]> partList = splitParts(packet);
-				int fragmentOffset = ByteHelper.readUnsignedShortLittleEndian(partList.get(4), 0);
-				if(prevMysqlCommand!=MysqlProtocol.COM_UNKNOWN && fragmentOffset>0/* If it is fragmented */){
-					currMysqlCommand = prevMysqlCommand;
-				}else{
-					currProtocolSequence = MysqlProtocol.getProtocolSequence(partList.get(5), partList.get(6));
-					currMysqlCommand = MysqlProtocol.getMysqlCommand(partList.get(5), partList.get(6));
-				}
-				
-				prevMysqlCommand = currMysqlCommand;
-				
-				if(fragmentOffset==0/*If it is not fragmented or first-fragmented */ && currProtocolSequence!=0/* if (Handshake-Phase) */){
+				short protocolSequence = MysqlProtocol.getProtocolSequence(partList.get(2), partList.get(3));
+				byte mysqlCommand = MysqlProtocol.getMysqlCommand(partList.get(2), partList.get(3));
+				if(protocolSequence!=0/* if (Handshake-Phase) */){
 					// This is handshake-phase between client and server
 					// We don't know this trying is going to succeed or not
 					// So just ignoring it
@@ -151,7 +141,7 @@ public class MQueueConsumer extends DefaultConsumer{
 				//}else if(mysqlCommand==MysqlProtocol.COM_CONNECT){
 				//	parent.processNewSession(partList);
 				//	processedNewSession++;
-				}else if(currMysqlCommand==MysqlProtocol.COM_QUIT){
+				}else if(mysqlCommand==MysqlProtocol.COM_QUIT){
 					parent.processCloseSession(sourceServerIp, partList);
 				}else{
 					parent.processUserRequest(sourceServerIp, partList);
@@ -180,39 +170,19 @@ public class MQueueConsumer extends DefaultConsumer{
 		}
     }
     
-    /**
-     * Split packet to each part
-     * 
-     * @param payload
-     * @return 
-     * parts[0] client-ip
-     * parts[1] client-port
-     * parts[2] ip-identification
-     * parts[3] ip-flags
-     * parts[4] ip-flagoffset
-     * parts[5] mysql-header
-     * parts[6] mysql-body
-     * @throws Exception
-     */
 	protected List<byte[]> splitParts(byte[] payload) throws Exception{
-		if(payload.length<(4+2+5+5)){
-			throw new Exception("MQ message must be greater than (4+2+5+5) bytes");			
+		if(payload.length<(4+2+5)){
+			throw new Exception("MQ message must be greater than (4+2+5) bytes");			
 		}
 		
-		byte[] sourceIp           = Arrays.copyOfRange(payload, 0, 4);                   // ip     : 4 bytes
-		byte[] sourcePort         = Arrays.copyOfRange(payload, 4, 4+2);                 // port   : 2 bytes
-		byte[] ipIdentification   = Arrays.copyOfRange(payload, 4+2, 4+2+2);             // ip-identification : 2 bytes
-		byte[] ipFlags            = Arrays.copyOfRange(payload, 4+2+2, 4+2+2+1);         // ip-flags          : 1 bytes
-		byte[] ipFlagOffset       = Arrays.copyOfRange(payload, 4+2+2+1, 4+2+2+1+2);     // ip-flagoffset     : 2 bytes
-		byte[] mysqlProtoHeader   = Arrays.copyOfRange(payload, 4+2+2+1+2, 4+2+2+1+2+5); // header : 5 bytes (length:3, sequence:1, command:1)
-		byte[] mysqlProtoBody     = (payload.length>(4+2+2+1+2+5)) ? Arrays.copyOfRange(payload, 4+2+2+1+2+5, payload.length) : null;  // body : remain...
+		byte[] sourceIp = Arrays.copyOfRange(payload, 0, 4);                // ip     : 4 bytes
+		byte[] sourcePort = Arrays.copyOfRange(payload, 4, 4+2);            // port   : 2 bytes
+		byte[] mysqlProtoHeader = Arrays.copyOfRange(payload, 4+2, 4+2+5);  // header : 5 bytes (length:3, sequence:1, command:1)
+		byte[] mysqlProtoBody = (payload.length>(4+2+5)) ? Arrays.copyOfRange(payload, 4+2+5, payload.length) : null;  // body : remain...
 		
 		List<byte[]> partList = new ArrayList<byte[]>();
 		partList.add(sourceIp);
 		partList.add(sourcePort);
-		partList.add(ipIdentification);
-		partList.add(ipFlags);
-		partList.add(ipFlagOffset);
 		partList.add(mysqlProtoHeader);
 		partList.add(mysqlProtoBody);
 		

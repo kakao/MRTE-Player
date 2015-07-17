@@ -304,7 +304,7 @@ public class MRTEPlayer {
 		
 		MysqlProtocol proto = null;
 		try{
-			proto = MysqlProtocol.parse(partList.get(2), partList.get(3), partList.get(4), partList.get(5), partList.get(6));
+			proto = MysqlProtocol.parse(partList.get(2), partList.get(3));
 		}catch(Exception ex){
 			throw new Exception("MysqlProtocol parse failed for new session", ex);
 		}
@@ -352,7 +352,7 @@ public class MRTEPlayer {
 				System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] New connection created with default db, query executed without sql player");
 			}
 			
-			player.postJob(new MysqlProtocol(0, 2/*Not-Fragmented*/, 0, MysqlProtocol.COM_INIT_DB, (short)0, proto.statement));
+			player.postJob(new MysqlProtocol(MysqlProtocol.COM_INIT_DB, (short)0, proto.statement));
 		}
 		
 		// We don't make new sql player, because this method will be called when server and client is trying to handshake.
@@ -367,15 +367,6 @@ public class MRTEPlayer {
 	}
 	
 	protected void processCloseSession(String sourceServerIp, List<byte[]> partList) throws Exception{
-		/** part list
-	     * parts[0] client-ip
-	     * parts[1] client-port
-	     * parts[2] ip-identification
-	     * parts[3] ip-flags
-	     * parts[4] ip-flagoffset
-	     * parts[5] mysql-header
-	     * parts[6] mysql-body
-	     */
 		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
 		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
 		String sessionKey = generateSessionKey(sourceIp, sourcePort);
@@ -387,7 +378,7 @@ public class MRTEPlayer {
 		if(player == null){
 			System.err.println("SQLPlayer thread is not exist for session key '"+sessionKey+"'");
 		}else{
-			player.postJob(new MysqlProtocol(0, 2/*Not-Fragmented*/, 0, MysqlProtocol.COM_QUIT, (short)0, "") /* Emulate COM_QUIT command */);
+			player.postJob(new MysqlProtocol(MysqlProtocol.COM_QUIT, (short)0, "") /* Emulate COM_QUIT command */);
 			this.playerMap.remove(sessionKey);
 			this.closeSessionCounter.incrementAndGet();
 			
@@ -398,25 +389,13 @@ public class MRTEPlayer {
 	}
 
 	protected void processUserRequest(String sourceServerIp, List<byte[]> partList) throws Exception{
-		/** part list
-	     * parts[0] client-ip
-	     * parts[1] client-port
-	     * parts[2] ip-identification
-	     * parts[3] ip-flags
-	     * parts[4] ip-flagoffset
-	     * parts[5] mysql-header
-	     * parts[6] mysql-body
-	     */
-
 		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
 		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
-		// int fragmentOffset = ByteHelper.readUnsignedShortLittleEndian(partList.get(4), 0);
 		String sessionKey = generateSessionKey(sourceIp, sourcePort);
 		
-		MysqlProtocol proto;
+		MysqlProtocol proto = null;
 		try{
-			// MysqlProtocol.parse() will handle wether packet is fragmented or not
-			proto = MysqlProtocol.parse(partList.get(2), partList.get(3), partList.get(4), partList.get(5), partList.get(6));
+			proto = MysqlProtocol.parse(partList.get(2), partList.get(3));
 		}catch(Exception ex){
 			throw new Exception("MysqlProtocol parse failed for normal request", ex);
 		}

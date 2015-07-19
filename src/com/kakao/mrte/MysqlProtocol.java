@@ -1,5 +1,6 @@
 package com.kakao.mrte;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -132,60 +133,25 @@ public class MysqlProtocol {
 
 	public final PROTO_PHASE phase;
 	public final byte command;
-	public final short sequence;
+	public final byte sequence;
+	public final byte[] packet;
+	
 	public String statement;
 	
-	public MysqlProtocol(byte c, short s, String st){
-		this.command = c;
-		this.sequence = s;
-		this.statement = st;
+	public MysqlProtocol(byte[] packet) throws Exception{
+		int currPosition = 0;
+		this.sequence = packet[currPosition++];
+		//this.command = packet[1];
+		this.packet = packet;
 
 		// In the command phase, the client sends a command packet with the sequence-id [00]:
 		this.phase = (this.sequence==0) ? PROTO_PHASE.COMMAND : PROTO_PHASE.HANDSHAKE;
-	}
-	
-
-	public static short getProtocolSequence(byte[] header, byte[] body){
-		if(header==null || header.length<4){
-			return -1;
-		}
-		
-		return (short)header[3];
-	}
-	
-	public static byte getMysqlCommand(byte[] header, byte[] body){
-		if(header==null || header.length<5){
-			return COM_UNKNOWN;
-		}
-		
-		return header[4];
-	}
-	
-	public static void main(String[] args) throws Exception{
-		byte[] header = new byte[]{0x14, 0x00, 0x00, 0x03, 0x06};
-		byte[] body = new byte[]{(byte)0xee, 0x1d, (byte)0xf5, 0x5f, 0x2d, (byte)0xc9, 0x6a, (byte)0x98, 0x21, 0x44, 0x3b, 0x14, (byte)0xb3, (byte)0xde, (byte)0xff, (byte)0xe1, (byte)0xb6, (byte)0xb0, 0x30};
-		System.out.println("body : " + new String(body));
-		MysqlProtocol.parse(header, body);
-	}
-	
-	public static MysqlProtocol parse(byte[] header, byte[] body) throws Exception{
-		if(header==null || header.length<5){
-			throw new Exception("MySQL packet must be greater than 4 bytes");
-		}
-		
-		int userdataSize = ByteHelper.readUnsignedMediumLittleEndian(header, 0);
-		if(userdataSize<=0){
-			throw new Exception("User data is empty, userdata_size is 0");
-		}
-		if(userdataSize > 10*1024*1024){
-			throw new Exception("User data is exceed 10MB");
-		}
-
-		byte command;
-		short sequence = (short)(header[3]);
-		String statement = null;
-		if(sequence==1){
-			command = COM_CONNECT; // Fake command
+		if(sequence>=1 && sequence<=10){
+			this.command = COM_CONNECT; // Fake command
+			if(packet.length<=5){
+				throw new Exception("COM_CONNECT packet's length must be greater than 5, current packet length is " + packet.length);
+			}
+			
 			/**
 		     * VERSION 4.1
 		     *  Bytes                        Name
@@ -198,37 +164,119 @@ public class MysqlProtocol {
 		     *  n (Length Coded Binary)      scramble_buff (1 + x bytes)
 		     *  n (Null-Terminated String)   databasename (optional)
 		     */
+			
 			byte[] compatibilityFlag = new byte[4];
-			compatibilityFlag[0] = header[4];
-			compatibilityFlag[1] = body[0];
-			compatibilityFlag[2] = body[1];
-			compatibilityFlag[3] = body[2];
+			compatibilityFlag[0] = packet[currPosition++];
+			compatibilityFlag[1] = packet[currPosition++];
+			compatibilityFlag[2] = packet[currPosition++];
+			compatibilityFlag[3] = packet[currPosition++];
 			
 			int flag = (int)ByteHelper.readUnsignedIntLittleEndian(compatibilityFlag, 0);
 			
-			int bytePosition = 4/*flag-length*/-1/*first byte of flag is not stored in body*/;
 			if((flag & FLAG_CLIENT_PROTOCOL_41) == FLAG_CLIENT_PROTOCOL_41){
-				statement = MysqlProtocol.parseInitDatabaseName(flag, body, bytePosition);
+				statement = MysqlProtocol.parseInitDatabaseName(flag, packet, currPosition);
 			}else{
-				System.err.println("I can only understand mysql client 4.1 and over");
+				statement = "NA";
+				throw new Exception("I can only understand mysql client 4.1 and over");
 			}
-		}else if(sequence>1){
+		}else if(sequence>10){
 			throw new Exception("Packet sequence number is too high (" + sequence + ")");
 		}else{
-			command = header[4];
+			command = packet[1];
 			if(command==COM_INIT_DB || command==COM_QUERY || command==COM_FIELD_LIST){
-				statement = (body==null) ? null : new String(body, NETWORK_CHARACTERSET);
-				statement = (statement==null) ? null : statement.trim();
+				if(packet.length>2){
+					statement = new String(Arrays.copyOfRange(packet, 2, packet.length));
+					statement = statement.trim();
+				}else{
+					statement = null;
+				}
 			}else if(command==COM_QUIT){
 				statement = null;
 			}else if(command==COM_STMT_PREPARE || command==COM_STMT_EXECUTE){
-				System.err.println("[ERROR] PrepredStatement is not supported yet, Just ignored");
+				throw new Exception("PrepredStatement is not supported yet, Just ignored");
 			}else{
-				System.err.println("[INFO]  "+COMMAND_MAP.get(new Integer(command))+" command is not handled in MRTE, Just ignored");
+				throw new Exception(COMMAND_MAP.get(new Integer(command))+" command is not handled in MRTE, Just ignored");
 			}
 		}
+	}
+
+	public static byte[] generateComQuitPacket(){
+		return new byte[]{0x01, 0x00, 0x00, 0x00, MysqlProtocol.COM_QUIT};
+	}
+	
+	public static boolean isComQuitCommand(byte[] packet){
+		if(packet!=null && packet.length>=5 && 
+				packet[0]==1 &&
+				packet[1]==0 &&
+				packet[2]==0 &&
+				packet[3]==0 /* SequenceNo==0 */ &&
+				packet[4]==MysqlProtocol.COM_QUIT)
+			return true;
 		
-		return new MysqlProtocol(command, sequence, statement);
+		return false;
+	}
+	
+//	public static short getProtocolSequence(byte[] header, byte[] body){
+//		if(header==null || header.length<4){
+//			return -1;
+//		}
+//		
+//		return (short)header[3];
+//	}
+//	
+//	public static byte getMysqlCommand(byte[] header, byte[] body){
+//		if(header==null || header.length<5){
+//			return COM_UNKNOWN;
+//		}
+//		
+//		return header[4];
+//	}
+	
+	public static void main(String[] args) throws Exception{
+		// Connection try
+		byte[] packet1 = new byte[]{
+				/*(byte)0x4f, (byte)0x00, (byte)0x00, ==> Length*/ 
+				                                    (byte)0x01, (byte)0x8d, (byte)0xa6, (byte)0x0f, (byte)0x20, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x01, (byte)0x21, (byte)0x00, (byte)0x00, (byte)0x00, // |O...... ....!...|
+				(byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, // |................|
+				(byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x74, (byte)0x65, (byte)0x73, (byte)0x74, (byte)0x5f, (byte)0x75, (byte)0x73, (byte)0x65, (byte)0x72, (byte)0x00, (byte)0x00, (byte)0x74, // |....test_user..t|
+				(byte)0x65, (byte)0x73, (byte)0x74, (byte)0x5f, (byte)0x64, (byte)0x61, (byte)0x74, (byte)0x61, (byte)0x62, (byte)0x61, (byte)0x73, (byte)0x65, (byte)0x00, (byte)0x6d, (byte)0x79, (byte)0x73, // |est_database.mys|
+				(byte)0x71, (byte)0x6c, (byte)0x5f, (byte)0x6e, (byte)0x61, (byte)0x74, (byte)0x69, (byte)0x76, (byte)0x65, (byte)0x5f, (byte)0x70, (byte)0x61, (byte)0x73, (byte)0x73, (byte)0x77, (byte)0x6f, // |ql_native_passwo|
+				(byte)0x72, (byte)0x64, (byte)0x00                                                                                                                                                              // |rd.|
+		};
+		
+		// Query
+		byte[] packet2 = new byte[]{
+				/*(byte)0x46, (byte)0x00, (byte)0x00, ==> Length */
+				                                    (byte)0x00, (byte)0x03, (byte)0x53, (byte)0x45, (byte)0x4c, (byte)0x45, (byte)0x43, (byte)0x54, (byte)0x20, (byte)0x60, (byte)0x64, (byte)0x65, (byte)0x76,  // |F....SELECT `dev|
+				(byte)0x69, (byte)0x63, (byte)0x65, (byte)0x73, (byte)0x60, (byte)0x2e, (byte)0x2a, (byte)0x20, (byte)0x46, (byte)0x52, (byte)0x4f, (byte)0x4d, (byte)0x20, (byte)0x60, (byte)0x64, (byte)0x65,  // |ices`.* FROM `de|
+				(byte)0x76, (byte)0x69, (byte)0x63, (byte)0x65, (byte)0x73, (byte)0x60, (byte)0x20, (byte)0x57, (byte)0x48, (byte)0x45, (byte)0x52, (byte)0x45, (byte)0x20, (byte)0x28, (byte)0x60, (byte)0x64,  // |vices` WHERE (`d|
+				(byte)0x65, (byte)0x76, (byte)0x69, (byte)0x63, (byte)0x65, (byte)0x73, (byte)0x60, (byte)0x2e, (byte)0x75, (byte)0x73, (byte)0x65, (byte)0x72, (byte)0x5f, (byte)0x69, (byte)0x64, (byte)0x20,  // |evices`.user_id |
+				(byte)0x3d, (byte)0x20, (byte)0x35, (byte)0x33, (byte)0x33, (byte)0x35, (byte)0x38, (byte)0x35, (byte)0x29, (byte)0x20                                                                           // |= 533585) |
+		};
+		
+		
+		byte[] packet3 = new byte[]{
+				/*(byte)0x06, (byte)0x00, (byte)0x00, ==> Length*/
+				                                    (byte)0x00, (byte)0x03, (byte)0x42, (byte)0x45, (byte)0x47, (byte)0x49, (byte)0x4e // |.....BEGIN|
+		};
+		
+		byte[] packet4 = new byte[]{
+				/*(byte)0x07, (byte)0x00, (byte)0x00, ==> Length */
+						                            (byte)0x00, (byte)0x03, (byte)0x43, (byte)0x4f, (byte)0x4d, (byte)0x4d, (byte)0x49, (byte)0x54 // |.....COMMIT|
+		};
+		
+		byte[] packet5 = new byte[]{
+				/*(byte)0x11, (byte)0x00, (byte)0x00, ==> Length */
+				                                    (byte)0x00, (byte)0x03, (byte)0x73, (byte)0x65, (byte)0x74, (byte)0x20, (byte)0x61, (byte)0x75, (byte)0x74, (byte)0x6f, (byte)0x63, (byte)0x6f, (byte)0x6d, //  |.....set autocom|
+				(byte)0x6d, (byte)0x69, (byte)0x74, (byte)0x3d, (byte)0x31                                                                                                                                      //  |mit=1|
+		};
+		
+		MysqlProtocol proto = new MysqlProtocol(packet1);
+		proto = new MysqlProtocol(packet2);
+		proto = new MysqlProtocol(packet3);
+		proto = new MysqlProtocol(packet4);
+		proto = new MysqlProtocol(packet5);
+		
 	}
 	
 	/**
@@ -246,7 +294,7 @@ public class MysqlProtocol {
 		// Read user name
 		int index = offset + (4/*MaxPacketSize*/+1/*CharacterSet*/+23/*Reserved*/);
 		byte[] userName = ByteHelper.readNullTerminatedBytes(body, index);
-		
+		System.out.println(">> UserName : " + new String(userName));
 		// Read auth response
 		index += (userName.length+1/*NULL-TERMINATION*/);
 		if((compatibilityFlag & FLAG_CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA) == FLAG_CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA){
@@ -263,6 +311,9 @@ public class MysqlProtocol {
 		if((compatibilityFlag & FLAG_CLIENT_CONNECT_WITH_DB) == FLAG_CLIENT_CONNECT_WITH_DB){
 			byte[] initDatabase = ByteHelper.readNullTerminatedBytes(body, index);
 			databaseName = (initDatabase!=null && initDatabase.length>0) ? new String(initDatabase) : null;
+			System.out.println(">> Database : " + databaseName);
+		}else{
+			System.out.println(">> Without Database");
 		}
 		
 		return databaseName;

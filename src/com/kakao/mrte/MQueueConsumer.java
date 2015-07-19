@@ -121,30 +121,11 @@ public class MQueueConsumer extends DefaultConsumer{
 			// Process current packet
 			// Packet : ip(4) + port(2) + mysql_packet_payload
 			try{
-				List<byte[]> partList = splitParts(packet);
-				short protocolSequence = MysqlProtocol.getProtocolSequence(partList.get(2), partList.get(3));
-				byte mysqlCommand = MysqlProtocol.getMysqlCommand(partList.get(2), partList.get(3));
-				if(protocolSequence!=0/* if (Handshake-Phase) */){
-					// This is handshake-phase between client and server
-					// We don't know this trying is going to succeed or not
-					// So just ignoring it
-					// And actually, we will never receive MysqlProtocol.COM_CONNECT command using only server-recv packet.
-					//               MysqlProtocol.COM_CONNECT is sent from server to client
-					//               And client will reponse message with (sequence=1 not 0) to server, if that case we try processNewSession()
-					try{
-						parent.processNewSession(sourceServerIp, partList);
-					}catch(Exception ex){
-						if(parent.IS_DEBUG){
-							throw ex;
-						}
-					}
-				//}else if(mysqlCommand==MysqlProtocol.COM_CONNECT){
-				//	parent.processNewSession(partList);
-				//	processedNewSession++;
-				}else if(mysqlCommand==MysqlProtocol.COM_QUIT){
-					parent.processCloseSession(sourceServerIp, partList);
+				byte[][] parts = splitMrtePacket(packet);
+				if(MysqlProtocol.isComQuitCommand(parts[2])){
+					parent.processCloseSession(sourceServerIp, parts);
 				}else{
-					parent.processUserRequest(sourceServerIp, partList);
+					parent.processUserRequest(sourceServerIp, parts);
 				}
 				
 				parent.recvPacketCounter++;
@@ -170,22 +151,20 @@ public class MQueueConsumer extends DefaultConsumer{
 		}
     }
     
-	protected List<byte[]> splitParts(byte[] payload) throws Exception{
-		if(payload.length<(4+2+5)){
-			throw new Exception("MQ message must be greater than (4+2+5) bytes");			
+	protected byte[][] splitMrtePacket(byte[] payload) throws Exception{
+		if(payload.length<(4+2+1/* Mysql packet also contain only 1 byte */)){
+			throw new Exception("MQ message must be greater than (4+2+1) bytes");			
 		}
 		
 		byte[] sourceIp = Arrays.copyOfRange(payload, 0, 4);                // ip     : 4 bytes
 		byte[] sourcePort = Arrays.copyOfRange(payload, 4, 4+2);            // port   : 2 bytes
-		byte[] mysqlProtoHeader = Arrays.copyOfRange(payload, 4+2, 4+2+5);  // header : 5 bytes (length:3, sequence:1, command:1)
-		byte[] mysqlProtoBody = (payload.length>(4+2+5)) ? Arrays.copyOfRange(payload, 4+2+5, payload.length) : null;  // body : remain...
+		byte[] mysqlProtoBody = (payload.length>(4+2)) ? Arrays.copyOfRange(payload, 4+2, payload.length) : null;  // body : remain...
 		
-		List<byte[]> partList = new ArrayList<byte[]>();
-		partList.add(sourceIp);
-		partList.add(sourcePort);
-		partList.add(mysqlProtoHeader);
-		partList.add(mysqlProtoBody);
+		byte[][] parts = new byte[3][];
+		parts[0] = sourceIp;
+		parts[1] = sourcePort;
+		parts[2] = mysqlProtoBody;
 		
-		return partList;
+		return parts;
 	}
 }

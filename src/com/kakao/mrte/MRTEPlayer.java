@@ -288,87 +288,9 @@ public class MRTEPlayer {
 	// ---------------------------------------------------------------------------------------
 	// Packet handling
 	// ---------------------------------------------------------------------------------------
-	
-	/**
-	 * Handle new connection request
-	 * Actually, COM_CONNECT request is not captured by MRTECollector (Because COM_CONNECT packet is sent from server to client, But MRTECollector capture only from-client packet)
-	 * But, client sent response packet for COM_CONNECT with (sequence_no>0), And MysqlProtocol.java will set COM_CONNECT to proto.command when packet which have non-zero sequence packet come. 
-	 *  
-	 * @param partList
-	 * @throws Exception
-	 */
-	protected void processNewSession(String sourceServerIp, List<byte[]> partList) throws Exception{
-		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
-		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
-		String sessionKey = generateSessionKey(sourceIp, sourcePort);
-		
-		MysqlProtocol proto = null;
-		try{
-			proto = MysqlProtocol.parse(partList.get(2), partList.get(3));
-		}catch(Exception ex){
-			throw new Exception("MysqlProtocol parse failed for new session", ex);
-		}
-		
-		if(IS_DEBUG)
-			System.out.println("   - [Packet] Create new session : ["+sessionKey+"][init_db:"+proto.statement+"]");
-
-// TODO :: Sometimes, MRTEPlayer receive client packets neither (sequence!=0) and (response of COM_CONNECT).
-//         So, I commented below code block for killing previous SQLPlayer.
-//         Find what case and fix this.
-		
-//		SQLPlayer oldPlayer = this.playerMap.get(sessionKey);
-//		if(oldPlayer != null){
-//			System.err.println("SQLPlayer thread is running already for session key '"+sessionKey+"'");
-//			System.err.println("Stop previous thread and re-creating it");
-//			oldPlayer.kill();
-//			this.playerMap.remove(sessionKey);
-//			this.closeSessionCounter.incrementAndGet();
-//		}
-		
-		SQLPlayer player = this.playerMap.get(sessionKey);
-		if(proto.command==MysqlProtocol.COM_CONNECT/*Emulated*/){
-			String db = null;
-			if(proto.statement!=null && proto.statement.length()>0){
-				db = (this.dbMapper==null) ? proto.statement : this.dbMapper.getNewDatabase(sourceServerIp, proto.statement);
-			}else{
-				db = this.defaultDatabase;
-			}
-
-			if(player==null){
-				// Clean prepared connection after 10 min from creation
-				// These connection might be closed because of mysql wait_timeout, So after 10 min after creation we should drop these connections.
-				destroyPreparedConnections();
-				
-				// Create new session + put init_db message to queue
-				player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.slowQueryTime, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
-				this.playerMap.put(sessionKey, player);
-				player.start();
-				this.newSessionCounter.incrementAndGet();
-			}else if(proto.statement!=null && proto.statement.length()>0){
-				player.postJob(proto);
-			}
-
-			if(MRTEPlayer.IS_DEBUG){
-				System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] New connection created with default db, query executed without sql player");
-			}
-			
-			player.postJob(new MysqlProtocol(MysqlProtocol.COM_INIT_DB, (short)0, proto.statement));
-		}
-		
-		// We don't make new sql player, because this method will be called when server and client is trying to handshake.
-		//               And we don't know this connection trying is going to succeed or not.
-		//               So, just clearing garbage sql player for this client ip and port
-		//SQLPlayer newPlayer = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, this.defaultDatabase, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
-		//this.playerMap.put(sessionKey, newPlayer);
-		//newPlayer.start();
-		//if(MRTEPlayer.IS_DEBUG){
-		//	System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] New connection created");
-		//}
-	}
-	
-	protected void processCloseSession(String sourceServerIp, List<byte[]> partList) throws Exception{
-		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
-		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
+	protected void processCloseSession(String sourceServerIp, byte[][] parts) throws Exception{
+		String sourceIp = ByteHelper.readIpString(parts[0], 0);
+		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(parts[1], 0);
 		String sessionKey = generateSessionKey(sourceIp, sourcePort);
 		
 		if(IS_DEBUG)
@@ -378,7 +300,7 @@ public class MRTEPlayer {
 		if(player == null){
 			System.err.println("SQLPlayer thread is not exist for session key '"+sessionKey+"'");
 		}else{
-			player.postJob(new MysqlProtocol(MysqlProtocol.COM_QUIT, (short)0, "") /* Emulate COM_QUIT command */);
+			player.postJob(MysqlProtocol.generateComQuitPacket()/* Emulate COM_QUIT command */);
 			this.playerMap.remove(sessionKey);
 			this.closeSessionCounter.incrementAndGet();
 			
@@ -388,33 +310,15 @@ public class MRTEPlayer {
 		}
 	}
 
-	protected void processUserRequest(String sourceServerIp, List<byte[]> partList) throws Exception{
-		String sourceIp = ByteHelper.readIpString(partList.get(0), 0);
-		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(partList.get(1), 0);
+	protected void processUserRequest(String sourceServerIp, byte[][] parts) throws Exception{
+		String sourceIp = ByteHelper.readIpString(parts[0], 0);
+		int sourcePort = ByteHelper.readUnsignedShortLittleEndian(parts[1], 0);
 		String sessionKey = generateSessionKey(sourceIp, sourcePort);
-		
-		MysqlProtocol proto = null;
-		try{
-			proto = MysqlProtocol.parse(partList.get(2), partList.get(3));
-		}catch(Exception ex){
-			throw new Exception("MysqlProtocol parse failed for normal request", ex);
-		}
-		
-		if(IS_DEBUG)
-			System.out.println("   - [Packet] Execute query : ["+sessionKey+"] ["+MysqlProtocol.COMMAND_MAP.get(new Integer(proto.command))+"]["+proto.statement+"]");
-		
-		String db = null;
-		if(proto.command==MysqlProtocol.COM_INIT_DB && this.dbMapper!=null && proto.statement!=null && proto.statement.length()>0){
-			proto.statement = this.dbMapper.getNewDatabase(sourceServerIp, proto.statement);
-			db = proto.statement;
-		}else{
-			db = this.defaultDatabase;
-		}
 		
 		SQLPlayer player = this.playerMap.get(sessionKey);
 		if(player==null){
 			// At starting MRTEPlayer, all connection is empty. So we have to guess default database with query
-			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, db, this.slowQueryTime, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, this.defaultDatabase, this.slowQueryTime, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
 			this.playerMap.put(sessionKey, player);
 			player.start();
 			this.newSessionCounter.incrementAndGet();
@@ -423,7 +327,7 @@ public class MRTEPlayer {
 				System.out.println("    >> SQLPlayer["+sourceIp+":"+sourcePort+"] New connection created, query executed without sql player");
 			}
 		}
-		
-		player.postJob(proto);
+
+		player.postJob(parts[2]);
 	}
 }

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.zip.Adler32;
 
 import com.kakao.util.ByteHelper;
 import com.kakao.util.HexDumper;
@@ -16,7 +17,7 @@ import com.rabbitmq.client.Envelope;
 
 public class MQueueConsumer extends DefaultConsumer{
 	final int PRE_FETCH = 30;
-	final int CHECKSUM_LENGTH = 11; // IP(4) + PORT(2) + MYSQL_HEADER(5)
+	final int CHECKSUM_LENGTH = 22; // IP(4) + PORT(2) + MYSQL_HEADER(5) + a
 	
 	private AtomicBoolean stopSubscriber = new AtomicBoolean(false);
 	MRTEPlayer parent;
@@ -68,11 +69,12 @@ public class MQueueConsumer extends DefaultConsumer{
 		String sourceServerIp = null;
 		try{
 			sourceServerIp = ByteHelper.readIpString(body, 0);
+			currPosition += 4;
 		}catch(ByteReadException bex){
 			throw new IOException(bex);
 		}
 		
-		currPosition += 4;
+		Adler32 adler32 = new Adler32();
 		String error = null;
 		ByteReadException exception = null;
 		while(currPosition<body.length){
@@ -88,12 +90,12 @@ public class MQueueConsumer extends DefaultConsumer{
 					error = "[ERROR] Failed to process MQ message : MQueueConsumer.handleDelivery() - packet length is zero or negative";
 					break;
 				}
+				currPosition += 4;
 			}catch(ByteReadException ex){
 				error = "[ERROR] Can not read packet size";
 				exception = ex;
 				break;
 			}
-			currPosition += 4;
 			
 			if( (currPosition + packetLen) > body.length ){
 				// There's something wrong.
@@ -106,17 +108,20 @@ public class MQueueConsumer extends DefaultConsumer{
 			currPosition += packet.length;
 			try{
 				long checksum = ByteHelper.readUnsignedIntLittleEndian(body, currPosition); // 4byte packet checksum
-				long calculatedChecksum = SimpleChecksum.getChecksum(packet, 0, CHECKSUM_LENGTH);
+				currPosition += 4/* Checksum */;
+				
+				adler32.update(packet, 0, (packet.length>=CHECKSUM_LENGTH) ? CHECKSUM_LENGTH : packet.length);
+				long calculatedChecksum = adler32.getValue();
 				if(checksum!=calculatedChecksum){
 					error = "[ERROR] Packet checksum is not correct, calculated-checksum:"+calculatedChecksum+", prebuilt-checksum:"+checksum;
 					break;
 				}
+				adler32.reset();
 			}catch(ByteReadException ex){
 				error = "[ERROR] Can not read packet checksum";
 				exception = ex;
 				break;
 			}
-			currPosition += 4/* Checksum */;
 			
 			// Process current packet
 			// Packet : ip(4) + port(2) + mysql_packet_payload

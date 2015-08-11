@@ -59,8 +59,10 @@ public class ByteHelper {
 		if(data==null) throw new ByteReadException("ByteHelper.readUnsignedIntLittleEndian()", index, 4);
 		if(data.length<(index + 4)) throw new ByteReadException("ByteHelper.readUnsignedIntLittleEndian()", data, index, 4);
     	
-        long result = (long) (data[index] & 0xFF) | (long) ((data[index + 1] & 0xFF) << 8)
-                      | (long) ((data[index + 2] & 0xFF) << 16) | (long) ((data[index + 3] & 0xFF) << 24);
+        long result = (long) (data[index] & 0xffL) | 
+        		(long) ((data[index + 1] & 0xffL) << 8) | 
+        		(long) ((data[index + 2] & 0xffL) << 16) | 
+        		(long) ((data[index + 3] & 0xffL) << 24);
         return result;
     }
  
@@ -71,7 +73,7 @@ public class ByteHelper {
         long accumulation = 0;
         int position = index;
         for (int shiftBy = 0; shiftBy < 64; shiftBy += 8) {
-            accumulation |= (long) ((data[position++] & 0xff) << shiftBy);
+            accumulation |= (long) ((data[position++] & 0xffL) << shiftBy);
         }
         return accumulation;
     }

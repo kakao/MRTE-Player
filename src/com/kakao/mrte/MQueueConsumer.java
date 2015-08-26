@@ -71,7 +71,9 @@ public class MQueueConsumer extends DefaultConsumer{
 			sourceServerIp = ByteHelper.readIpString(body, 0);
 			currPosition += 4;
 		}catch(ByteReadException bex){
-			throw new IOException(bex);
+			System.err.println("[ERROR] Can't read source ip address from packet, body length : " + body.length);
+			bex.printStackTrace(System.err);
+			return;
 		}
 		
 		Adler32 adler32 = new Adler32();
@@ -79,7 +81,8 @@ public class MQueueConsumer extends DefaultConsumer{
 		ByteReadException exception = null;
 		while(currPosition<body.length){
 			if(currPosition+14/* at least, LENGTH(4)+IP(4)+PORT(2)+CHECKSUM(4) */ >= body.length){
-				parent.errorPacketCounter++;
+				error = "[ERROR] Packet size is too small ("+body.length+" < " + (currPosition+14);
+				parent.errorPacketCounter.incrementAndGet();
 				break; // no more data or error
 			}
 			
@@ -135,7 +138,7 @@ public class MQueueConsumer extends DefaultConsumer{
 				
 				parent.recvPacketCounter++;
 			}catch(Exception ignore){
-				parent.errorPacketCounter++;
+				parent.errorPacketCounter.incrementAndGet();
 				System.err.println("Failed to process MQ message : " + ignore.getMessage());
 				System.err.println("---------------------------------------------------------------------");
 				HexDumper.dumpBytes(System.err, packet);
@@ -145,7 +148,7 @@ public class MQueueConsumer extends DefaultConsumer{
 		}
 		
 		if(error!=null){
-			parent.errorPacketCounter++;
+			parent.errorPacketCounter.incrementAndGet();
 			System.err.println(error);
 			if(exception!=null) exception.printStackTrace(System.err);
 			System.err.println("---------------------------------------------------------------------");

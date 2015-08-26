@@ -27,7 +27,8 @@ public class MRTEPlayer {
 	protected AtomicBoolean shutdown = new AtomicBoolean(false);
 
 	public long recvPacketCounter = 0;
-	public long errorPacketCounter = 0;
+	public AtomicLong errorPacketCounter = new AtomicLong(0);
+	public AtomicLong debugStatCounter = new AtomicLong(0); // Debugging
 	public AtomicLong playerErrorCounter = new AtomicLong(0);
 	public AtomicLong newSessionCounter = new AtomicLong(0);
 	public AtomicLong closeSessionCounter = new AtomicLong(0);
@@ -66,6 +67,8 @@ public class MRTEPlayer {
 	String mqQueueName;
 	String mqRoutingKey;
 	
+	long maxAllowedPacketSize;
+	
 	Map<String, SQLPlayer> playerMap = new HashMap<String, SQLPlayer>();
 	
 	public static void main(String[] args) throws Exception{
@@ -98,6 +101,8 @@ public class MRTEPlayer {
 			}
 			player.mqQueueName = options.getStringParameter("rabbitmq_queue_name", "");
 			player.mqRoutingKey = options.getStringParameter("rabbitmq_routing_key", "");
+			
+			player.maxAllowedPacketSize = options.getLongParameter("max_packet_size", SQLPlayer.MAX_ALLOWED_PACKET_LEN);
 		}catch(Exception ex){
 			ex.printStackTrace();
 			options.printHelp(80, 5, 3, true, System.out);
@@ -148,6 +153,7 @@ public class MRTEPlayer {
 	    long pLockTimeoutCounter = 0;
 	    long pNoInitDatabsaeCounter = 0;
 	    long pLongQueryCounter = 0;
+	    //long pDebugStatCounter = 0;
 
 	    long cRecvPacketCounter = 0;
 	    long cErrorPacketCounter = 0;
@@ -160,6 +166,7 @@ public class MRTEPlayer {
 	    long cLockTimeoutCounter = 0;
 	    long cNoInitDatabsaeCounter = 0;
 	    long cLongQueryCounter = 0;
+	    //long cDebugStatCounter = 0;
 	    
 	    int loopCounter = 0;
 	    while(true){
@@ -170,7 +177,7 @@ public class MRTEPlayer {
 	    	}
 	    	
 	    	cRecvPacketCounter = recvPacketCounter;
-	    	cErrorPacketCounter = errorPacketCounter;
+	    	cErrorPacketCounter = errorPacketCounter.get();
 	    	cNewSessionCounter = newSessionCounter.get();
 	    	cCloseSessionCounter = closeSessionCounter.get();
 	    	cUserRequestCounter = userRequestCounter.get();
@@ -180,10 +187,12 @@ public class MRTEPlayer {
 	    	cLockTimeoutCounter = lockTimeoutCounter.get();
 	    	cNoInitDatabsaeCounter = noInitDatabsaeCounter.get();
 	    	cLongQueryCounter = longQueryCounter.get();
+	    	//cDebugStatCounter = debugStatCounter.get();
 	    	
 	    	System.out.format("%s %15d  %15d   %10d    %10d  %15d(%4d)  %11d (%8d  %10d  %8d  %11d)\n", dateFormatter.format(new Date()), 
 	    			(long)((cRecvPacketCounter - pRecvPacketCounter) / STATUS_INTERVAL_SECOND),
-	    			(long)((cErrorPacketCounter - pErrorPacketCounter) / STATUS_INTERVAL_SECOND),
+	    			// (long)((cErrorPacketCounter - pErrorPacketCounter) / STATUS_INTERVAL_SECOND),
+	    			(cErrorPacketCounter - pErrorPacketCounter), // Print sum for error count not average / sec
 	    			(cNewSessionCounter - pNewSessionCounter),
 	    			(cCloseSessionCounter - pCloseSessionCounter),
 	    			(long)((cUserRequestCounter - pUserRequestCounter) / STATUS_INTERVAL_SECOND),
@@ -193,6 +202,7 @@ public class MRTEPlayer {
 	    			(long)((cDuplicateKeyCounter - pDuplicateKeyCounter) / STATUS_INTERVAL_SECOND),
 	    			(long)((cDeadlockCounter - pDeadlockCounter) / STATUS_INTERVAL_SECOND),
 	    			(long)((cLockTimeoutCounter - pLockTimeoutCounter) / STATUS_INTERVAL_SECOND));
+	    			// (long)((cDebugStatCounter - pDebugStatCounter) / STATUS_INTERVAL_SECOND));
 	    	
 	    	if(cRecvPacketCounter==pRecvPacketCounter && cErrorPacketCounter==pErrorPacketCounter){
 	    		// There's no activity on MQueueConsumer
@@ -221,6 +231,7 @@ public class MRTEPlayer {
 	    	pLockTimeoutCounter = cLockTimeoutCounter;
 	    	pNoInitDatabsaeCounter = cNoInitDatabsaeCounter;
 	    	pLongQueryCounter = cLongQueryCounter;
+	    	//pDebugStatCounter = cDebugStatCounter;
 	    	
 	    	try{
 	    		Thread.sleep(STATUS_INTERVAL_SECOND * 1000);
@@ -318,7 +329,7 @@ public class MRTEPlayer {
 		SQLPlayer player = this.playerMap.get(sessionKey);
 		if(player==null){
 			// At starting MRTEPlayer, all connection is empty. So we have to guess default database with query
-			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, this.defaultDatabase, this.slowQueryTime, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE);
+			player = new SQLPlayer(this, sourceIp, sourcePort, this.preparedConnQueue.poll(), this.jdbcUrl, this.mysqlUser, this.mysqlPassword, this.defaultDatabase, this.slowQueryTime, this.replaySelectOnly, SQLPlayer.SESSION_QUEUE_SIZE, this.maxAllowedPacketSize);
 			this.playerMap.put(sessionKey, player);
 			player.start();
 			this.newSessionCounter.incrementAndGet();

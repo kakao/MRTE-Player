@@ -5,14 +5,14 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.kakao.util.ByteArrayListStream;
 import com.kakao.util.SQLHelper;
 
 public class SQLPlayer extends Thread/*implements Runnable*/ {
-	
+	public static final long MAX_ALLOWED_PACKET_LEN = 64 * 1024 - 3; // 64KB
 	public final static int SESSION_QUEUE_SIZE = 100;
 	
 	private boolean isPlayerPrepared = false;
@@ -29,7 +29,7 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 	public final String defaultDatabase;
 	public final long slowQueryTime; /* Milli-second */
 	
-	private ArrayBlockingQueue<byte[]> jobQueue;
+	private ConcurrentLinkedQueue<byte[]> jobQueue;
 	private ByteArrayListStream stream;
 	private Connection targetConnection;
 	private Statement stmt;
@@ -43,7 +43,7 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 		return clientIp + clientPort;
 	}
 	
-	public SQLPlayer(MRTEPlayer parent, String clientIp, int clientPort, Connection conn, String jdbcUrl, String user, String password, String defaultDatabase, long slowQueryTime, boolean playOnlySelect, int queueSize) throws Exception{
+	public SQLPlayer(MRTEPlayer parent, String clientIp, int clientPort, Connection conn, String jdbcUrl, String user, String password, String defaultDatabase, long slowQueryTime, boolean playOnlySelect, int queueSize, long maxAllowedPacketSize) throws Exception{
 		this.parent = parent;
 		this.clientIp = clientIp;
 		this.clientPort = clientPort;
@@ -60,12 +60,12 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 		this.connectionOpened = new AtomicLong(System.currentTimeMillis());
 		this.lastQueryExecuted = new AtomicLong(System.currentTimeMillis());
 		
-		this.jobQueue = new ArrayBlockingQueue<byte[]>(queueSize);
-		this.stream = new ByteArrayListStream(this.jobQueue);
+		this.jobQueue = new ConcurrentLinkedQueue<byte[]>(); // (queueSize);
+		this.stream = new ByteArrayListStream(this.jobQueue, parent.errorPacketCounter, parent.debugStatCounter, maxAllowedPacketSize);
 		this.currentDatabase = defaultDatabase;
 		
 		if(conn==null){
-			System.err.println("      SQLPlayer :: create connection on Creator()");
+			// System.err.println("      SQLPlayer :: create connection on Creator()");
 			initConnection(getConnection());
 		}else{
 			initConnection(conn);
@@ -130,7 +130,9 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 		while(true){
 			try{
 				packet = stream.getPacket();
+				
 				if(packet==null){
+					System.out.println("     [ERROR] packet is null");
 					continue;
 				}
 				
@@ -139,11 +141,15 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 					proto = new MysqlProtocol(packet);
 				}catch(Exception ex){
 					System.err.println("    [ERROR] Parse packet failed : " + ex.getMessage());
+					parent.errorPacketCounter.incrementAndGet();
+					continue;
+				}
+				
+				if(proto.command==MysqlProtocol.COM_PING){
 					continue;
 				}
 				
 				// Processing packet
-				
 				if(!isPlayerPrepared){
 					try{
 						reconnect();
@@ -211,9 +217,10 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 									}
 								}
 							}
-							if(MRTEPlayer.IS_DEBUG){
+							//if(MRTEPlayer.IS_DEBUG){
 								System.err.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] COM_QUERY failed : " + ex.getMessage());
-							}
+								System.err.println("       " + proto.statement);
+							//}
 						}
 						parent.userRequestCounter.incrementAndGet();
 						this.lastQueryExecuted.set(System.currentTimeMillis());
@@ -258,14 +265,13 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 						isPlayerPrepared = false;
 						closeAllResource();
 						return; // Exit sqlplayer thread loop
+					}else{
+						System.out.println("    >> SQLPlayer Command is not handled : " + proto.command);
 					}
 				}catch(Exception ex){
 					ex.printStackTrace();
 					parent.stopAllPlayers();
 				}
-				
-				// Read next packet
-				packet = stream.getPacket();
 			}catch(Exception ex){
 				System.err.println("[ERROR] Uncaught exception : " + ex.getLocalizedMessage());
 				ex.printStackTrace(System.err);

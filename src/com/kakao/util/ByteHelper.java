@@ -82,7 +82,8 @@ public class ByteHelper {
 		if(data==null) throw new ByteReadException("ByteHelper.readUnsignedShortLittleEndian()", index, 2);
 		if(data.length<(index + 2)) throw new ByteReadException("ByteHelper.readUnsignedShortLittleEndian()", data, index, 2);
 
-        int result = (data[index] & 0xFF) | ((data[index + 1] & 0xFF) << 8);
+        int result = (data[index] & 0xFF) | 
+        		((data[index + 1] & 0xFF) << 8);
         return result;
     }
  
@@ -90,7 +91,9 @@ public class ByteHelper {
 		if(data==null) throw new ByteReadException("ByteHelper.readUnsignedMediumLittleEndian()", index, 3);
 		if(data.length<(index + 3)) throw new ByteReadException("ByteHelper.readUnsignedMediumLittleEndian()", data, index, 3);
 
-        int result = (data[index] & 0xFF) | ((data[index + 1] & 0xFF) << 8) | ((data[index + 2] & 0xFF) << 16);
+        int result = (data[index] & 0xFF) | 
+        		((data[index + 1] & 0xFF) << 8) | 
+        		((data[index + 2] & 0xFF) << 16);
         return result;
     }
  

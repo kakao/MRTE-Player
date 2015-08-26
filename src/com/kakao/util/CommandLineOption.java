@@ -160,6 +160,8 @@ public class CommandLineOption{
 		options.addOption("rt", "rabbitmq_routing_key", true, "RabbitMQ routing key");
 		
 		options.addOption("sq", "slow_query_time", true, "Long query time in milli-seconds");
+		// Added parameter let MRTE-Player recognize max_allowed_packet_size or source MySQL server. 
+		options.addOption("mp", "max_packet_size", true, "Max allowed packet size of MySQL in bytes");
 		
 		options.addOption("so", "select_only", true, "Replay only select query");
 		options.addOption("dr", "database_remap", true, "Database remapping options");

@@ -18,6 +18,7 @@ java \
 --mysql_port=3306 \
 --mysql_init_conn=200 \
 --mysql_default_db="" \
+--max_packet_size=65535 \
 --database_remap="192.168.0.1/db=newdb1,192.168.0.2/db=newdb2,192.168.0.3/db=newdb3,192.168.0.4/db=newdb4" \
 --rabbitmq_host="127.0.0.1" \
 --rabbitmq_user="guest" \

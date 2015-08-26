@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import com.kakao.util.ByteHelper;
+import com.kakao.util.HexDumper;
 
 
 public class MysqlProtocol {
@@ -194,14 +195,60 @@ public class MysqlProtocol {
 				statement = null;
 			}else if(command==COM_STMT_PREPARE || command==COM_STMT_EXECUTE){
 				throw new Exception("PrepredStatement is not supported yet, Just ignored");
+			}else if(command==COM_PING){
+				statement = null;
 			}else{
+				System.err.println("---------------------------------------------------------------------");
+				HexDumper.dumpBytes(System.err, packet);
+				System.err.println("---------------------------------------------------------------------");
 				throw new Exception(COMMAND_MAP.get(new Integer(command))+" command is not handled in MRTE, Just ignored");
 			}
 		}
 	}
 
+	/**
+	 * Check packet-length of mysql header is match with total packet size EXACTLY.
+	 * 
+	 * @param packet
+	 * @param maxAllowedPacketSize
+	 * @return
+	 */
+	public static boolean hasValidMySQLPacketHeader(byte[] packet){
+    	if(packet.length<5){
+    		// Initial packet size is too small (less than 5 bytes)");
+    		return false;
+    	}
+    	
+    	int currentPacketSize = 0;
+    	try{
+    		// Length of the payload. The number of bytes in the packet beyond the initial 4 bytes that make up the packet header.
+    		// SO, (Payload length) == (Total packet length - 4)
+    		currentPacketSize = ByteHelper.readUnsignedMediumLittleEndian(packet, 0);
+    	}catch(Exception ignore){
+    		return false;
+    	}
+    	
+    	if(currentPacketSize>0 && currentPacketSize==(packet.length-4)){
+    		return true;
+    	}
+    	
+    	return false;
+	}
+	
 	public static byte[] generateComQuitPacket(){
 		return new byte[]{0x01, 0x00, 0x00, 0x00, MysqlProtocol.COM_QUIT};
+	}
+	
+	public static boolean isComPingCommand(byte[] packet){
+		if(packet!=null && packet.length>=5 && 
+				packet[0]==1 &&
+				packet[1]==0 &&
+				packet[2]==0 &&
+				packet[3]==0 /* SequenceNo==0 */ &&
+				packet[4]==MysqlProtocol.COM_PING)
+			return true;
+		
+		return false;
 	}
 	
 	public static boolean isComQuitCommand(byte[] packet){
@@ -294,7 +341,7 @@ public class MysqlProtocol {
 		// Read user name
 		int index = offset + (4/*MaxPacketSize*/+1/*CharacterSet*/+23/*Reserved*/);
 		byte[] userName = ByteHelper.readNullTerminatedBytes(body, index);
-		System.out.println(">> UserName : " + new String(userName));
+		//System.out.println(">> UserName : " + new String(userName));
 		// Read auth response
 		index += (userName.length+1/*NULL-TERMINATION*/);
 		if((compatibilityFlag & FLAG_CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA) == FLAG_CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA){
@@ -311,9 +358,9 @@ public class MysqlProtocol {
 		if((compatibilityFlag & FLAG_CLIENT_CONNECT_WITH_DB) == FLAG_CLIENT_CONNECT_WITH_DB){
 			byte[] initDatabase = ByteHelper.readNullTerminatedBytes(body, index);
 			databaseName = (initDatabase!=null && initDatabase.length>0) ? new String(initDatabase) : null;
-			System.out.println(">> Database : " + databaseName);
+			//System.out.println(">> Database : " + databaseName);
 		}else{
-			System.out.println(">> Without Database");
+			//System.out.println(">> Without Database");
 		}
 		
 		return databaseName;

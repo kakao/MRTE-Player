@@ -52,11 +52,11 @@ public class ByteArrayListStream {
     /**
      * Return completed packet whether it is splitted multiple tcp stream
      * 
-     * @return mysql_sequence + mysql_payload (Does not contain payload_length (3 bytes))
+     * @return ArrayList of "mysql_sequence + mysql_payload (Does not contain payload_length (3 bytes))"
      */
-    public byte[] getPacket(){
+    public List<byte[]> getPackets(){
+    	List<byte[]> packetList = new ArrayList<byte[]>();
     	byte[] bytes = getNextBytes();
-    	long lastPacketArrivalTimeMs = System.currentTimeMillis();
     	
     	if(bytes.length<3){
     		this.errorPacketCounter.incrementAndGet();
@@ -85,7 +85,8 @@ public class ByteArrayListStream {
     	
     	if((bytes.length-4) >= currentPacketSize){
     		// Short circuit
-    		return Arrays.copyOfRange(bytes, 3, bytes.length);
+    		packetList.add(Arrays.copyOfRange(bytes, 3, bytes.length));
+    		return packetList;
     	}
     	
 //    	// Debug printing
@@ -106,30 +107,18 @@ public class ByteArrayListStream {
         
     	while((stackedSize-4) < currentPacketSize){ // stackedSize includes 4 byte header, so we have to compare (stackedSize-4) with mysql payload length
     		bytes = getNextBytes();
-    		
-    		long currentMs = System.currentTimeMillis();
-    		if((currentMs - lastPacketArrivalTimeMs) >= 500){
-    			// For Debugging
-    			// System.err.println("[WARN] splitted packet arrival time gap is over 500 milli-seconds");
-    			lastPacketArrivalTimeMs = currentMs;
-    		}
-    		stackedSize += bytes.length;
-    		currentList.add(bytes);
-    		
     		if(MysqlProtocol.hasValidMySQLPacketHeader(bytes)){
-				// Something wrong, Might be packet is lost somewhere. (I don't now why and where yet)
-				// Ignore everything accumulated, and return just current query.
-				this.errorPacketCounter.incrementAndGet();
-				
-    			System.err.println(">> Wrong Packet (Expected : "+currentPacketSize+", Current : "+(stackedSize-4)+")---------------------------");
-    			for(int x=0; x<currentList.size(); x++){
-    				System.err.println("> Packet : " + x); System.err.flush();
-    				HexDumper.dumpBytes(System.err, currentList.get(x));
-    				System.err.flush();
+				// There's something wrong in TCP stream.
+    			// But actually MRTE-Collector will send "COM_INIT_DB" and "COM_QUIT" command articificially.
+    			//     This will break TCP stream. So we have to handle this kind of broken message.
+    			packetList.add(Arrays.copyOfRange(bytes, 3, bytes.length));
+    			if(packetList.size()>5){
+    				// If this broken message happen more than 5 times, just considering this as Real error.
+    				return packetList;
     			}
-    			
-    			// Previous packet is not useless, so drop previous packet and just return current complete packet
-    			return Arrays.copyOfRange(bytes, 3, bytes.length);
+			}else{
+	    		stackedSize += bytes.length;
+	    		currentList.add(bytes);
 			}
     	}
     	
@@ -163,7 +152,8 @@ public class ByteArrayListStream {
     		*/
     	}
     	
-    	return packet;
+    	packetList.add(packet);
+    	return packetList;
     }
     
     public static void main(String[] args) throws Exception{
@@ -182,11 +172,14 @@ public class ByteArrayListStream {
     	for(int idx=0; idx<100; idx++){
     		queue.offer(b);
     		
-    		byte[] packet = stream.getPacket();
-    		if(packet==null) System.out.println("> idx="+idx+" : Packet is null");
+    		List<byte[]> packets = stream.getPackets();
+    		if(packets==null) System.out.println("> idx="+idx+" : Packet is null");
     		else{
-    			byte[] b1 = new byte[]{packet[0], packet[1], packet[2]};
-    			System.out.println("> idx="+idx+" : Packet header : " + new String(b1));
+    			for(int idx1=0; idx1<packets.size(); idx1++){
+    				byte[] packet = packets.get(idx1);
+    				byte[] b1 = new byte[]{packet[0], packet[1], packet[2]};
+    				System.out.println("> idx="+idx+" : Packet header : " + new String(b1));
+    			}
     		}
     	}
     	
@@ -203,11 +196,14 @@ public class ByteArrayListStream {
     		queue.offer(a);
     		queue.offer(b);  // Check if blocked when this line is commented.
     		
-    		byte[] packet = stream.getPacket();
-    		if(packet==null) System.out.println("> idx="+idx+" : Packet is null");
+    		List<byte[]> packets = stream.getPackets();
+    		if(packets==null) System.out.println("> idx="+idx+" : Packet is null");
     		else{
-    			byte[] b1 = new byte[]{packet[0], packet[1], packet[2]};
-    			System.out.println("> idx="+idx+" : Packet header : " + new String(b1));
+    			for(int idx1=0; idx1<packets.size(); idx1++){
+    				byte[] packet = packets.get(idx1);
+    				byte[] b1 = new byte[]{packet[0], packet[1], packet[2]};
+    				System.out.println("> idx="+idx+" : Packet header : " + new String(b1));
+    			}
     		}
     	}
     	
@@ -215,7 +211,10 @@ public class ByteArrayListStream {
     	System.out.println(">>>>>>>>>> real packet test");
     	byte[] t = new byte[]{0x05, 0x00, 0x00, 0x00, 0x02, 0x74, 0x65, 0x73, 0x74};
     	queue.offer(t);
-    	byte[] packet1 = stream.getPacket();
-    	System.out.println(packet1[2]);
+    	List<byte[]> packets1 = stream.getPackets();
+    	for(int idx=0; idx<packets1.size(); idx++){
+    		byte[] packet1 = packets1.get(idx);
+    		System.out.println(packet1[2]);
+    	}
     }
 }

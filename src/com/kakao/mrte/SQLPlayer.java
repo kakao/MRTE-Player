@@ -5,6 +5,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -126,151 +127,158 @@ public class SQLPlayer extends Thread/*implements Runnable*/ {
 	
 	public void run(){
 		MysqlProtocol proto;
+		List<byte[]> packetList;
 		byte[] packet;
 		while(true){
 			try{
-				packet = stream.getPacket();
-				
-				if(packet==null){
-					System.out.println("     [ERROR] packet is null");
+				packetList = stream.getPackets();
+				if(packetList==null || packetList.size()<=0){
 					continue;
 				}
 				
-				// Parse packet
-				try{
-					proto = new MysqlProtocol(packet);
-				}catch(Exception ex){
-					System.err.println("    [ERROR] Parse packet failed : " + ex.getMessage());
-					parent.errorPacketCounter.incrementAndGet();
-					continue;
-				}
-				
-				if(proto.command==MysqlProtocol.COM_PING){
-					continue;
-				}
-				
-				// Processing packet
-				if(!isPlayerPrepared){
-					try{
-						reconnect();
-					}catch(Exception ex){
-						System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Failed to prepare connection");
-						ex.printStackTrace(System.err);
+				for(int pidx=0; pidx<packetList.size(); pidx++){
+					packet = packetList.get(pidx);
+					if(packet==null){
+						System.out.println("     [ERROR] packet is null");
+						continue;
 					}
-				}
-				
-				try{
-					if(proto.command==MysqlProtocol.COM_QUERY){
-						if(this.playOnlySelect){
-							if(!SQLHelper.isSelectQuery(proto.statement)){
-								if(MRTEPlayer.IS_DEBUG){
-									System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Current mode is only-select, sql '"+proto.statement+"' is ignored");
-								}
-								continue;
-							}
-						}
+					
+					// Parse packet
+					try{
+						proto = new MysqlProtocol(packet);
+					}catch(Exception ex){
+						System.err.println("    [ERROR] Parse packet failed : " + ex.getMessage());
+						parent.errorPacketCounter.incrementAndGet();
+						continue;
+					}
+					
+					if(proto.command==MysqlProtocol.COM_PING){
+						continue;
+					}
+					
+					// Processing packet
+					if(!isPlayerPrepared){
 						try{
-							long queryStart = System.currentTimeMillis(); // System.nanoTime();
-							boolean hasResult = this.stmt.execute(proto.statement);
-							long queryEnd = System.currentTimeMillis(); // System.nanoTime();
-							if(hasResult){
-								ResultSet rs = this.stmt.getResultSet();
-								// while(rs.next()); ==> MySQL always buffering all result set from server. so we don't need to iterating all rows.
-								rs.close();
+							reconnect();
+						}catch(Exception ex){
+							System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Failed to prepare connection");
+							ex.printStackTrace(System.err);
+						}
+					}
+					
+					try{
+						if(proto.command==MysqlProtocol.COM_QUERY){
+							if(this.playOnlySelect){
+								if(!SQLHelper.isSelectQuery(proto.statement)){
+									if(MRTEPlayer.IS_DEBUG){
+										System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Current mode is only-select, sql '"+proto.statement+"' is ignored");
+									}
+									continue;
+								}
+							}
+							try{
+								long queryStart = System.currentTimeMillis(); // System.nanoTime();
+								boolean hasResult = this.stmt.execute(proto.statement);
+								long queryEnd = System.currentTimeMillis(); // System.nanoTime();
+								if(hasResult){
+									ResultSet rs = this.stmt.getResultSet();
+									// while(rs.next()); ==> MySQL always buffering all result set from server. so we don't need to iterating all rows.
+									rs.close();
+								}
+								
+								if((queryEnd - queryStart) > this.slowQueryTime){
+									parent.longQueryCounter.incrementAndGet();
+								}
+							}catch(Exception ex){
+								parent.playerErrorCounter.incrementAndGet();
+								if(ex instanceof SQLException){
+									SQLException sqle = (SQLException)ex;
+									String sqlState = sqle.getSQLState();
+									int sqlErrorNo = sqle.getErrorCode();
+	
+									if(sqlErrorNo>=2000){ // Server error code
+										if(MysqlProtocol.SQLSTATE_NO_INIT_DB.equalsIgnoreCase(sqlState)){
+											if(defaultDatabase==null || defaultDatabase.length()<=0){
+												findAndSetDefaultDatabase(this.targetConnection, proto.statement);
+											}else{
+												setDefaultDatabase(this.defaultDatabase);
+											}
+											parent.noInitDatabsaeCounter.incrementAndGet();
+										}else if(MysqlProtocol.SQLSTATE_DUP_KEY.equalsIgnoreCase(sqlState)){
+											parent.duplicateKeyCounter.incrementAndGet();
+										}else if(MysqlProtocol.SQLSTATE_DEADLOCK.equalsIgnoreCase(sqlState)){
+											parent.deadlockCounter.incrementAndGet();
+										}else if(MysqlProtocol.SQLERROR_LOCK_WAIT_TIMEOUT==sqlErrorNo){
+											parent.lockTimeoutCounter.incrementAndGet();
+										}else{
+											System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Failed to execute sql '"+proto.statement+"'");
+										}
+									}else{ // Client error code
+										try{
+											this.reconnect();
+										}catch(Exception ex1){
+											System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Failed to reconnect mysql server (client error during process user request)");
+											System.out.println("       " + ex1.getMessage());
+											// There's nothing to do more. 
+											// Need something. or request stop MRTEPlayer process 
+										}
+									}
+								}
+								//if(MRTEPlayer.IS_DEBUG){
+									System.err.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] COM_QUERY failed : " + ex.getMessage());
+									System.err.println("       " + proto.statement);
+								//}
+							}
+							parent.userRequestCounter.incrementAndGet();
+							this.lastQueryExecuted.set(System.currentTimeMillis());
+						}else if(proto.command==MysqlProtocol.COM_FIELD_LIST){
+							try{
+								boolean hasResult = this.stmt.execute("DESC " + proto.statement);
+								if(hasResult){
+									ResultSet rs = this.stmt.getResultSet();
+									// while(rs.next()); ==> MySQL always buffering all result set from server. so we don't need to iterating all rows.
+									rs.close();
+								}
+							}catch(Exception ex){
+								// Just ignore this packet
+								// parent.playerErrorCounter.incrementAndGet();
+								// if(MRTEPlayer.IS_DEBUG){
+								// 	System.err.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] COM_FIELD_LIST failed");
+								// 	ex.printStackTrace(System.err);
+								// }
+							}
+							this.lastQueryExecuted.set(System.currentTimeMillis());
+							parent.userRequestCounter.incrementAndGet();
+						}else if(proto.command==MysqlProtocol.COM_INIT_DB && proto.statement!=null && proto.statement.length()>0){
+							boolean result = setDefaultDatabase(proto.statement);
+							if(!result){
+								System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] set default db '"+proto.statement+"' failed");
+								parent.playerErrorCounter.incrementAndGet();
 							}
 							
-							if((queryEnd - queryStart) > this.slowQueryTime){
-								parent.longQueryCounter.incrementAndGet();
+							this.lastQueryExecuted.set(System.currentTimeMillis());
+							parent.userRequestCounter.incrementAndGet();
+							if(MRTEPlayer.IS_DEBUG){
+								System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Default db is initialized, and connection is prepared");
 							}
-						}catch(Exception ex){
-							parent.playerErrorCounter.incrementAndGet();
-							if(ex instanceof SQLException){
-								SQLException sqle = (SQLException)ex;
-								String sqlState = sqle.getSQLState();
-								int sqlErrorNo = sqle.getErrorCode();
-
-								if(sqlErrorNo>=2000){ // Server error code
-									if(MysqlProtocol.SQLSTATE_NO_INIT_DB.equalsIgnoreCase(sqlState)){
-										if(defaultDatabase==null || defaultDatabase.length()<=0){
-											findAndSetDefaultDatabase(this.targetConnection, proto.statement);
-										}else{
-											setDefaultDatabase(this.defaultDatabase);
-										}
-										parent.noInitDatabsaeCounter.incrementAndGet();
-									}else if(MysqlProtocol.SQLSTATE_DUP_KEY.equalsIgnoreCase(sqlState)){
-										parent.duplicateKeyCounter.incrementAndGet();
-									}else if(MysqlProtocol.SQLSTATE_DEADLOCK.equalsIgnoreCase(sqlState)){
-										parent.deadlockCounter.incrementAndGet();
-									}else if(MysqlProtocol.SQLERROR_LOCK_WAIT_TIMEOUT==sqlErrorNo){
-										parent.lockTimeoutCounter.incrementAndGet();
-									}else{
-										System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Failed to execute sql '"+proto.statement+"'");
-									}
-								}else{ // Client error code
-									try{
-										this.reconnect();
-									}catch(Exception ex1){
-										System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Failed to reconnect mysql server (client error during process user request)");
-										System.out.println("       " + ex1.getMessage());
-										// There's nothing to do more. 
-										// Need something. or request stop MRTEPlayer process 
-									}
-								}
+						}else if(proto.command==MysqlProtocol.COM_CONNECT){
+							// Actually, SQLPlayer can't receive COM_CONNECT packet.
+							// So, This is emulated protocol by MysqlProtocol.parse();
+							if(proto.statement!=null && proto.statement.length()>0){
+								this.setDefaultDatabase(proto.statement);
 							}
-							//if(MRTEPlayer.IS_DEBUG){
-								System.err.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] COM_QUERY failed : " + ex.getMessage());
-								System.err.println("       " + proto.statement);
-							//}
+						}else if(proto.command==MysqlProtocol.COM_QUIT){
+							// Stop replaying user request
+							isPlayerPrepared = false;
+							closeAllResource();
+							return; // Exit sqlplayer thread loop
+						}else{
+							System.out.println("    >> SQLPlayer Command is not handled : " + proto.command);
 						}
-						parent.userRequestCounter.incrementAndGet();
-						this.lastQueryExecuted.set(System.currentTimeMillis());
-					}else if(proto.command==MysqlProtocol.COM_FIELD_LIST){
-						try{
-							boolean hasResult = this.stmt.execute("DESC " + proto.statement);
-							if(hasResult){
-								ResultSet rs = this.stmt.getResultSet();
-								// while(rs.next()); ==> MySQL always buffering all result set from server. so we don't need to iterating all rows.
-								rs.close();
-							}
-						}catch(Exception ex){
-							// Just ignore this packet
-							// parent.playerErrorCounter.incrementAndGet();
-							// if(MRTEPlayer.IS_DEBUG){
-							// 	System.err.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] COM_FIELD_LIST failed");
-							// 	ex.printStackTrace(System.err);
-							// }
-						}
-						this.lastQueryExecuted.set(System.currentTimeMillis());
-						parent.userRequestCounter.incrementAndGet();
-					}else if(proto.command==MysqlProtocol.COM_INIT_DB && proto.statement!=null && proto.statement.length()>0){
-						boolean result = setDefaultDatabase(proto.statement);
-						if(!result){
-							System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] set default db '"+proto.statement+"' failed");
-							parent.playerErrorCounter.incrementAndGet();
-						}
-						
-						this.lastQueryExecuted.set(System.currentTimeMillis());
-						parent.userRequestCounter.incrementAndGet();
-						if(MRTEPlayer.IS_DEBUG){
-							System.out.println("    >> SQLPlayer["+this.clientIp+":"+this.clientPort+"] Default db is initialized, and connection is prepared");
-						}
-					}else if(proto.command==MysqlProtocol.COM_CONNECT){
-						// Actually, SQLPlayer can't receive COM_CONNECT packet.
-						// So, This is emulated protocol by MysqlProtocol.parse();
-						if(proto.statement!=null && proto.statement.length()>0){
-							this.setDefaultDatabase(proto.statement);
-						}
-					}else if(proto.command==MysqlProtocol.COM_QUIT){
-						// Stop replaying user request
-						isPlayerPrepared = false;
-						closeAllResource();
-						return; // Exit sqlplayer thread loop
-					}else{
-						System.out.println("    >> SQLPlayer Command is not handled : " + proto.command);
+					}catch(Exception ex){
+						ex.printStackTrace();
+						parent.stopAllPlayers();
 					}
-				}catch(Exception ex){
-					ex.printStackTrace();
-					parent.stopAllPlayers();
 				}
 			}catch(Exception ex){
 				System.err.println("[ERROR] Uncaught exception : " + ex.getLocalizedMessage());

@@ -144,6 +144,7 @@ public class CommandLineOption{
 	
 	protected Options generateCmdLineOptions(){
 		Options options = new Options();
+		options.addOption("mt", "mysql_timezone", true, "MySQL timezone");
 		options.addOption("mh", "mysql_host", true, "MySQL target host");
 		options.addOption("mP", "mysql_port", true, "MySQL port");
 		options.addOption("mu", "mysql_user", true, "MySQL user");

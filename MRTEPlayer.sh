@@ -12,6 +12,7 @@ java \
 -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationStoppedTime \
 -Xloggc:mrte_player_gc.log -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=10 -XX:GCLogFileSize=20M \
 -Xmx10G -Xms10G -cp $CLASSPATH com.kakao.mrte.MRTEPlayer \
+--mysql_timezone="UTC" \
 --mysql_host="127.0.0.1" \
 --mysql_user="mrte" \
 --mysql_password="" \

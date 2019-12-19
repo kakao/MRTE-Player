@@ -40,6 +40,7 @@ public class MRTEPlayer {
 	public AtomicLong longQueryCounter = new AtomicLong(0);
 	
 	int initMysqlConnCount = 300;
+	String mysqlTimezone;
 	String mysqlHost;
 	int mysqlPort;
 	String mysqlUser;
@@ -77,6 +78,7 @@ public class MRTEPlayer {
 		CommandLineOption options = new CommandLineOption(args);
 		
 		try{
+			player.mysqlTimezone = options.getStringParameter("mysql_timezone");
 			player.mysqlHost = options.getStringParameter("mysql_host");
 			player.mysqlUser = options.getStringParameter("mysql_user");
 			player.mysqlPassword = options.getStringParameter("mysql_password", "");
@@ -110,9 +112,9 @@ public class MRTEPlayer {
 		}
 		
 		if(player.defaultDatabase==null){
-			player.jdbcUrl = "jdbc:mysql://"+player.mysqlHost+":"+player.mysqlPort+"/?autoReconnect=true";
+			player.jdbcUrl = "jdbc:mysql://"+player.mysqlHost+":"+player.mysqlPort+"/?autoReconnect=true&serverTimezone="+player.mysqlTimezone;
 		}else{
-			player.jdbcUrl = "jdbc:mysql://"+player.mysqlHost+":"+player.mysqlPort+"/"+player.defaultDatabase+"?autoReconnect=true";
+			player.jdbcUrl = "jdbc:mysql://"+player.mysqlHost+":"+player.mysqlPort+"/"+player.defaultDatabase+"?autoReconnect=true&serverTimezone="+player.mysqlTimezone;
 		}
 		player.mqUrl = "amqp://"+player.mqUser+":"+player.mqPassword+"@"+player.mqHost+":"+player.mqPort+"/";
 		

@@ -25,6 +25,7 @@ This is MRTEPlayer option list.
 
 | Parameter             | Description                                                                                                                                    |
 | ---                   | ---                                                                                                                                            |
+| `--mysql_timezone`    | Target MySQL server host timezone (e.g. "UTC")                                                                                                 |
 | `--mysql_host`        | Target MySQL server host name or ip address (e.g. "127.0.0.1")                                                                                 |
 | `--mysql_user`        | Target MySQL server user account (This user can access #{mysql_default_db})                                                                    |
 | `--mysql_password`    | Target MySQL server user password                                                                                                              |
